@@ -1,0 +1,52 @@
+{
+    "model": {
+        "num_stories": 10,
+        "dof_per_floor": [ "Ux", "Uy", "Rz" ],
+        "coordinate_reference": "geometry_center"
+    },
+    "floor_defaults": {
+        "mass": 1000000.0,
+        "jz": 8000000.0,
+        "mass_center": [ 0.0, 0.0 ],
+        "elements": [
+            { "x": -5.0, "y": -3.0, "kx": 200000000.0, "ky": 200000000.0 },
+            { "x": 5.0, "y": -3.0, "kx": 200000000.0, "ky": 200000000.0 },
+            { "x": 5.0, "y": 3.0, "kx": 200000000.0, "ky": 200000000.0 },
+            { "x": -5.0, "y": 3.0, "kx": 200000000.0, "ky": 200000000.0 }
+        ]
+    },
+    "stories": [
+        { "story": 1 },
+        { "story": 2 },
+        { "story": 3 },
+        { "story": 4 },
+        { "story": 5 },
+        { "story": 6 },
+        { "story": 7 },
+        { "story": 8 },
+        { "story": 9 },
+        { "story": 10 }
+    ],
+    "sensors": [
+        { "id": "roof_center_x", "story": 10, "x": 0.0, "y": 0.0, "direction": "X", "quantity": "accel" },
+        { "id": "roof_corner_x", "story": 10, "x": 5.0, "y": 3.0, "direction": "X", "quantity": "accel" },
+        { "id": "roof_corner_y", "story": 10, "x": 5.0, "y": 3.0, "direction": "Y", "quantity": "accel" }
+    ],
+    "damping": {
+        "type": "rayleigh",
+        "zeta": 0.0,
+        "modes": [ 1, 3 ]
+    },
+    "ground_motion": {
+        "dt": 0.01,
+        "duration": 20.0,
+        "synthetic": {
+            "amplitude_x": 0.15,
+            "amplitude_y": 0.08,
+            "frequency_x": 1.2,
+            "frequency_y": 0.8,
+            "decay": 0.08
+        }
+    }
+}
+

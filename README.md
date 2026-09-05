@@ -1,0 +1,538 @@
+# qREST 可控结构动力模型
+
+本目录提供一个用于生成 qREST 测试数据的可控数值模型。它的目标不是替代精细有限元分析，而是生成结构、质量、刚度、阻尼、输入地震动和测点位置都明确可控的响应数据，方便算法单元测试、回归测试和异常结果排查。
+
+当前主要包含三自由度刚性楼板模型和单向层剪切模型。三自由度模型的基本假定为：
+
+- 结构自由度：每层 `Ux, Uy, Rz`
+- 楼板假定：刚性楼板
+- 结构层数：配置文件控制，默认样例为 10 层
+- 坐标参考：配置默认以几何中心为参考，程序内部统一转换到每层质心
+- 材料和单元：线弹性
+- 输出内容：楼层主自由度响应、测点响应、质量/刚度/阻尼矩阵、逐层理论刚度
+
+## 目录结构
+
+```text
+py_scripts/model/
+  story3d/                       三自由度刚性楼板模型工作区
+    configs/
+      default_10story.json
+      variable_stiffness_16story_external_gm.json
+    scripts/
+      run_direct_stiffness.py
+      run_opensees_story.py
+      compare_backends.py
+  shear1d/                        单向层剪切模型工作区
+    configs/
+      shear_16story_external_gm.json
+    scripts/
+      run_direct_shear.py
+      run_opensees_shear.py
+      compare_shear_backends.py
+  output/                         两类模型默认输出，默认被 git 忽略
+  input/                          两类模型共用的外部激励文件
+  config/
+    datasets/                     批量生成测试数据的工况配置
+  scripts/                         数据集生成、测点映射、元信息和导出入口
+    build_datasets.py
+    map_sensors.py
+    make_metadata.py
+    make_algorithm_configs.py
+    export_datasets.py
+  qrest_model/
+    common/                       配置、地震动、阻尼、IO、对比工具
+    theory/                       层刚度理论公式、测点刚性楼板映射
+    backends/
+      direct_stiffness.py         方法 B：直接刚度矩阵 + Newmark
+      opensees_story.py           方法 A：OpenSeesPy 建模和动力分析
+      direct_shear.py             单向层剪切：直接矩阵 + Newmark
+      opensees_shear.py           单向层剪切：OpenSeesPy
+```
+
+## 两种后端
+
+### `direct_stiffness`
+
+使用 NumPy 显式组装总体质量矩阵 `M`、刚度矩阵 `K` 和 Rayleigh 阻尼矩阵 `C`，再用线性 Newmark 方法进行时程积分。该方法主要用于理论对照和回归测试。
+
+支持两种层刚度定义：
+
+- 通过构件布置自动计算：`elements`
+- 直接给定层刚度和刚心：`direct_stiffness`
+
+### `opensees_story`
+
+使用 OpenSeesPy 建立二维三自由度楼层模型：
+
+- `ops.model("basic", "-ndm", 2, "-ndf", 3)`
+- 每层质心设置主节点
+- 构件位置设置从属节点，并通过 `rigidLink("beam", master, slave)` 表示刚性楼板
+- 相邻楼层同一构件位置之间使用 `zeroLength` 弹簧
+- 使用 `UniformExcitation` 输入 X/Y 双向地面加速度
+- 使用和直接法一致的 Rayleigh 阻尼系数
+
+注意：OpenSees 后端要求每层显式给出 `elements`。若配置只给了 `direct_stiffness`，请使用 `direct_stiffness` 后端。
+
+## 单向层剪切模型
+
+除三自由度楼层模型外，本目录还提供单向层剪切模型。该模型每层只有一个平动自由度，适合快速生成一维层间剪切响应，也适合做基础动力算法验证。
+
+单向模型配置的核心字段如下：
+
+```json
+{
+  "model": {
+    "num_stories": 16,
+    "dof_per_floor": ["Ux"]
+  },
+  "floor_defaults": {
+    "mass": 1000000.0
+  },
+  "stories": [
+    {"story": 1, "stiffness": 800000000.0},
+    {"story": 2, "stiffness": 800000000.0}
+  ]
+}
+```
+
+字段说明：
+
+- `dof_per_floor` 可为 `["Ux"]` 或 `["Uy"]`
+- `mass` 为楼层集中质量
+- `stiffness` 为对应层间剪切刚度，第 1 层表示第 1 层相对地面的层间刚度
+
+单向模型也提供两个后端：
+
+- `direct_shear`：显式组装一维 `M/C/K` 并使用 Newmark 积分
+- `opensees_shear`：使用 OpenSeesPy 的一维节点和 `zeroLength` 弹簧
+
+## Linux 运行入口
+
+下面命令默认从项目根目录 `/home/yue/CodeFiles/qrest_module` 执行，并使用项目虚拟环境：
+
+```bash
+.venv/bin/python --version
+```
+
+### 运行单个三自由度模型
+
+直接刚度后端：
+
+```bash
+.venv/bin/python py_scripts/model/story3d/scripts/run_direct_stiffness.py \
+  --config py_scripts/model/story3d/configs/default_10story.json
+```
+
+OpenSees 后端：
+
+```bash
+.venv/bin/python py_scripts/model/story3d/scripts/run_opensees_story.py \
+  --config py_scripts/model/story3d/configs/default_10story.json
+```
+
+默认输出目录为：
+
+```text
+py_scripts/model/output/story3d/default_10story/direct_stiffness
+py_scripts/model/output/story3d/default_10story/opensees_story
+```
+
+也可以手动指定输出目录：
+
+```bash
+.venv/bin/python py_scripts/model/story3d/scripts/run_direct_stiffness.py \
+  --config py_scripts/model/story3d/configs/default_10story.json \
+  --output py_scripts/model/output/story3d/compare_default/direct_stiffness
+```
+
+```bash
+.venv/bin/python py_scripts/model/story3d/scripts/run_opensees_story.py \
+  --config py_scripts/model/story3d/configs/default_10story.json \
+  --output py_scripts/model/output/story3d/compare_default/opensees_story
+```
+
+### 运行单向模型
+
+单向 16 层外部激励样例配置位于：
+
+```text
+py_scripts/model/shear1d/configs/shear_16story_external_gm.json
+```
+
+直接刚度后端：
+
+```bash
+.venv/bin/python py_scripts/model/shear1d/scripts/run_direct_shear.py \
+  --config py_scripts/model/shear1d/configs/shear_16story_external_gm.json
+```
+
+OpenSees 后端：
+
+```bash
+.venv/bin/python py_scripts/model/shear1d/scripts/run_opensees_shear.py \
+  --config py_scripts/model/shear1d/configs/shear_16story_external_gm.json
+```
+
+### 后端对比
+
+当一个 case 目录下同时存在 `direct_stiffness` 和 `opensees_story` 子目录时，可运行：
+
+```bash
+.venv/bin/python py_scripts/model/story3d/scripts/compare_backends.py \
+  --case py_scripts/model/output/story3d/compare_default \
+  --output py_scripts/model/output/story3d/compare_default/compare_metrics.txt
+```
+
+单向模型对比命令为：
+
+```bash
+.venv/bin/python py_scripts/model/shear1d/scripts/compare_shear_backends.py \
+  --case py_scripts/model/output/shear1d/shear_16story_external_gm \
+  --output py_scripts/model/output/shear1d/shear_16story_external_gm/compare_metrics.txt
+```
+
+比较脚本默认读取：
+
+```text
+direct_stiffness/master_response.csv
+opensees_story/master_response.csv
+```
+
+输出指标包括各响应量的最大绝对误差和相对 L2 误差。
+
+## 生成 qREST 测试数据集
+
+面向 qREST 算法测试的数据集由统一脚本生成，不再直接在脚本里硬编码工况。工况配置放在：
+
+```text
+py_scripts/model/config/datasets/
+```
+
+每个 JSON 对应一个工况，包含模型类型、质量/刚度、输入地震动和测点布局。脚本会把配置中的简写布局展开成后端可直接读取的完整 `config.json`。例如 `layout: two_x` 会在指定楼层生成两侧 X 向测点，`layout: center_y` 会在指定楼层生成中心 Y 向测点。
+
+生成全部工况：
+
+```bash
+.venv/bin/python py_scripts/model/scripts/build_datasets.py
+```
+
+只生成一个工况：
+
+```bash
+.venv/bin/python py_scripts/model/scripts/build_datasets.py \
+  --case two_x_one_y_torsion
+```
+
+指定外部配置目录：
+
+```bash
+.venv/bin/python py_scripts/model/scripts/build_datasets.py \
+  --config-root path/to/dataset_configs
+```
+
+默认输出到：
+
+```text
+py_scripts/model/output/test_datasets/
+```
+
+每个工况一个子目录，目录结构为：
+
+```text
+config.json                展开后的模型配置，可被 direct 后端直接读取
+metadata.json              qREST 元信息，可与 time_history/acceleration.csv 配套使用
+dataset_info.json          数据集生成说明
+master_time_history/       所有楼层质点绝对响应
+time_history/              配置测点映射后的绝对响应
+  acceleration.csv
+  velocity.csv
+  displacement.csv
+structural_properties/     质量、刚度、阻尼、主频和振型等结构动力特性
+config/                    与该模型数据匹配的 qREST 算法配置
+```
+
+`master_time_history` 输出所有质点的绝对时程，每个文件第 1 列是 `time`，其余列形如：
+
+```text
+story_01_x, story_01_y, story_01_rz, ..., story_16_x, story_16_y, story_16_rz
+```
+
+`time_history` 下每个文件的第 1 列是 `time`，其余每列是一个观测点的单向绝对物理量，例如 2X1Y 工况中：
+
+```text
+time,01f_x_yneg,01f_x_ypos,01f_y_xpos,...
+```
+
+`structural_properties` 保留结构动力学基础信息，不混入时程文件：
+
+```text
+mass_matrix.csv
+stiffness_matrix.csv
+damping_matrix.csv
+modal_frequencies.csv
+mode_shapes.csv
+story_stiffness.csv
+summary.json
+```
+
+其中矩阵 CSV 使用 DOF 标签作为行列名；`modal_frequencies.csv` 输出圆频率、Hz 频率和周期；`mode_shapes.csv` 输出质量归一化振型，列为 `mode_01`、`mode_02` 等。
+
+`config` 目录仿照 `resource/qrest_data/<dataset>/config`，但参数由当前模型数据生成，而不是复制 Kunming/Wuhan 或通用 `resource/config`：
+
+- 预处理和 RR 的滤波频带根据采样频率和结构基频生成。
+- OMA 的 `init_frequencies` 来自 `structural_properties/modal_frequencies.csv`。
+- MaxEDP 的 `column_position` 来自模型平面足迹。
+- IM 的特征周期使用结构基准周期。
+
+导出为 qREST 文本数据集时，`export_datasets.py` 会优先复制生成数据目录中的这个 `config/`。
+
+正式工况主要在 1F、3F、7F、11F、16F 布设测点，错层混合工况额外在 1F、4F、8F、12F、16F 布设中心 Y 测点。模型配置使用均匀侧向刚度：所有楼层继承同一个四角构件布置，`stories` 中只保留楼层编号以简化配置。扭转工况通过质量中心偏心 `[0.2, 0.3]` 产生，几何中心仍为 `[0.0, 0.0]`。输入地震动采样间隔按原始文件设置为 `0.02s`。
+
+也可以单独从模型配置生成 qREST 元信息：
+
+```bash
+.venv/bin/python py_scripts/model/scripts/make_metadata.py \
+  --config py_scripts/model/output/test_datasets/two_x_one_y_torsion/config.json \
+  --data py_scripts/model/output/test_datasets/two_x_one_y_torsion/time_history/acceleration.csv \
+  --output py_scripts/model/output/test_datasets/two_x_one_y_torsion/metadata.json
+```
+
+该脚本生成的 `metadata.json` 使用 qREST 标准字段：`BuildingInfo`、`InstrumentInfo` 和 `DataInfo`。通道顺序与 `acceleration.csv` 中观测列顺序一致，X/Y/Z 方向分别使用 Azimuth `90/0/-1`。
+
+如果只调整测点方案，不需要重新计算结构响应。修改 `config.json` 中的 `sensors` 后，可用所有质点时程重新映射测点：
+
+```bash
+.venv/bin/python py_scripts/model/scripts/map_sensors.py \
+  --config py_scripts/model/output/test_datasets/two_x_one_y_torsion/config.json \
+  --master-dir py_scripts/model/output/test_datasets/two_x_one_y_torsion/master_time_history \
+  --output-dir py_scripts/model/output/test_datasets/two_x_one_y_torsion/time_history \
+  --metadata-output py_scripts/model/output/test_datasets/two_x_one_y_torsion/metadata.json
+```
+
+若要把这些生成数据作为 `src/qrest_algorithm_test` 的输入数据源，可导出为 qREST 文本数据集目录：
+
+```bash
+.venv/bin/python py_scripts/model/scripts/export_datasets.py \
+  --input py_scripts/model/output/test_datasets
+```
+
+默认导出到：
+
+```text
+resource/test_output/generated_datasets/
+```
+
+导出的目录包含 `<case>_metadata.json`、`<case>_data.txt` 和模型数据自身的 `config/`，可直接传给 C++ 测试：
+
+```bash
+xmake run test_qrest_algorithm_im resource/test_output/generated_datasets/single_x
+xmake run test_qrest_algorithm_rr resource/test_output/generated_datasets/two_x_one_y_torsion
+```
+
+也可直接传给 `src/qrest_algorithm_example` 下的原生 C ABI 示例：
+
+```bash
+xmake run example_im resource/test_output/generated_datasets/single_x
+xmake run example_edp_max resource/test_output/generated_datasets/two_x_torsion
+```
+
+PyMethod 示例也支持相同的数据目录参数：
+
+```bash
+xmake run example_rr_pymethod resource/test_output/generated_datasets/two_x_one_y_torsion
+```
+
+当前会生成 5 类工况：
+
+```text
+single_x                 单向 X 数据
+dual_xy                  双向 X/Y 数据
+two_x_one_y_torsion      2X1Y，可体现扭转
+two_x_torsion            2X，可体现单向平动和扭转
+staggered_2x_center_y    错层混合数据：1/3/7/11/16F 两侧 X，1/4/8/12/16F 中心 Y
+```
+
+竖向 Z 数据暂不生成，因为当前模型本体未引入竖向结构自由度。`2X1Y` 和 `2X` 工况使用质量中心偏心，使输入能够激发 `Rz`。两个 X 测点布置在同一 `x`、不同 `y` 位置，因此通道差异中包含扭转贡献。
+
+`staggered_2x_center_y` 是用于算法研究的错层特殊数据。它在不同楼层形成不同数据能力：1F/16F 为 `XYR`，3F/7F/11F 为 `MX`，4F/8F/12F 为 `Y`，整体会被 qREST 识别为 `MIXED_DIRECTION`。
+当前 OMA 后处理明确拒绝 `MIXED_DIRECTION`，因此该工况可用于 qREST 数据读取、IM、Preprocess、RR、EDP 测试和后续算法研究，但不作为现有 OMA 通过用例。
+
+## 输出文件约定
+
+两个后端尽量使用相同文件名，便于自动对比。
+
+响应时程统一使用 CSV：
+
+```text
+master_response.csv
+sensor_response.csv
+```
+
+参数、矩阵和元信息统一使用 TXT：
+
+```text
+mass_matrix.txt
+stiffness_matrix.txt
+damping_matrix.txt
+story_stiffness_theory.txt
+metadata.txt
+```
+
+### `master_response.csv`
+
+每一行对应一个时间步和一个楼层主节点：
+
+```text
+time, story, node_or_sensor_id,
+ux, uy, rz, vx, vy, vrz, ax, ay, arz,
+abs_ux, abs_uy, abs_rz, abs_vx, abs_vy, abs_vrz, abs_ax, abs_ay, abs_arz
+```
+
+其中：
+
+- `ux, uy, rz`、`vx, vy, vrz`、`ax, ay, arz`：相对地面的主自由度响应
+- `abs_*`：在平动方向叠加地面运动后的绝对响应；`Rz` 无地面转动输入，因此 `abs_rz/abs_vrz/abs_arz` 与相对值相同
+
+地面位移和速度由输入地面加速度按梯形积分得到，初始地面位移和速度取 0。
+
+### `sensor_response.csv`
+
+每一行对应一个时间步和一个测点。直接刚度后端的测点响应由刚性楼板公式从楼层主自由度映射得到：
+
+```text
+u(x, y) = Ux - y * Rz
+v(x, y) = Uy + x * Rz
+```
+
+OpenSees 后端会按传感器坐标创建仅用于记录的 sensor node，并通过 `rigidLink("beam", master, sensor)` 连接到楼层主节点。
+
+字段包含：
+
+```text
+time, story, node_or_sensor_id, direction, quantity,
+ux, uy, rz, vx, vy, vrz, ax, ay, arz,
+abs_ux, abs_uy, abs_rz, abs_vx, abs_vy, abs_vrz, abs_ax, abs_ay, abs_arz,
+value, relative_value
+```
+
+`value` 是按测点 `direction` 和 `quantity` 投影后的绝对标量响应；`relative_value` 保留对应的相对响应。
+
+### 矩阵和参数文件
+
+- `mass_matrix.txt`：总体质量矩阵 `M`
+- `stiffness_matrix.txt`：总体刚度矩阵 `K`
+- `damping_matrix.txt`：Rayleigh 阻尼矩阵 `C = alpha M + beta K`
+- `story_stiffness_theory.txt`：逐层 3x3 理论层刚度表
+- `metadata.txt`：后端名称、响应定义、Rayleigh 阻尼系数等
+
+矩阵文件使用逗号分隔，方便用 `numpy.loadtxt(path, delimiter=",")` 读取。
+
+## 配置说明
+
+默认配置文件为：
+
+```text
+py_scripts/model/story3d/configs/default_10story.json
+```
+
+另有一个 16 层变刚度外部激励样例：
+
+```text
+py_scripts/model/story3d/configs/variable_stiffness_16story_external_gm.json
+```
+
+关键配置项：
+
+- `model.num_stories`：楼层数
+- `floor_defaults.mass`：默认楼层质量
+- `floor_defaults.jz`：默认楼层绕 z 轴转动惯量
+- `floor_defaults.mass_center`：质量中心坐标
+- `elements`：构件位置和 X/Y 向刚度
+- `sensors`：测点楼层、坐标、方向和响应类型
+- `damping`：Rayleigh 阻尼设置
+- `ground_motion`：地震动时间步、总时长、文件输入或合成输入
+
+坐标默认相对于几何中心。加载配置时，程序会把构件、测点和刚心坐标转换到每层质心坐标系：
+
+```text
+x_c = x_g - x_mass_center
+y_c = y_g - y_mass_center
+```
+
+### 逐层参数变化
+
+程序支持每层参数不同。配置加载时会先读取 `floor_defaults`，再用 `stories` 中对应楼层的字段覆盖默认值。因此：
+
+- 如果每层完全相同，可以只在 `floor_defaults` 中写 `mass`、`jz`、`elements` 等参数，并在 `stories` 中只列出楼层编号。
+- 如果某一层参数不同，在该层的 `stories` 条目中写出需要覆盖的字段即可。
+- 如果覆盖 `elements`，该层会使用新的构件列表，而不是和默认构件列表逐项合并。
+
+例如，下面表示第 1 层继承默认质量和转动惯量，但使用自己的构件刚度：
+
+```json
+{
+  "story": 1,
+  "elements": [
+    {"x": -5.0, "y": -3.0, "kx": 2.0e8, "ky": 2.0e8},
+    {"x": 5.0, "y": -3.0, "kx": 2.0e8, "ky": 2.0e8},
+    {"x": 5.0, "y": 3.0, "kx": 2.0e8, "ky": 2.0e8},
+    {"x": -5.0, "y": 3.0, "kx": 2.0e8, "ky": 2.0e8}
+  ]
+}
+```
+
+`variable_stiffness_16story_external_gm.json` 中 16 层结构的构件刚度从底层到顶层线性降低，顶层刚度为底层的 80%。底层单个构件刚度为 `2.0e8`，顶层单个构件刚度为 `1.6e8`。
+
+### 外部激励文件
+
+外部地震动通过 `ground_motion.ax_file` 和 `ground_motion.ay_file` 指定：
+
+```json
+{
+  "ground_motion": {
+    "dt": 0.01,
+    "duration": 149.99,
+    "ax_file": "../../input/gm_x.txt",
+    "ay_file": "../../input/gm_y.txt",
+    "ax_scale": 1.0,
+    "ay_scale": 1.0
+  }
+}
+```
+
+路径相对于配置文件所在目录解析。例如三自由度配置位于 `py_scripts/model/story3d/configs/`，则 `../../input/gm_x.txt` 指向 `py_scripts/model/input/gm_x.txt`。
+
+支持两种文件格式：
+
+- 单列：每行一个加速度值。程序使用配置中的 `dt` 生成时间轴。
+- 两列：第一列为时间，第二列为加速度。程序会插值到配置中的统一时间轴。
+
+`duration` 和 `dt` 共同决定输出步数：
+
+```text
+n_steps = round(duration / dt) + 1
+```
+
+如果单列文件有 15000 个点，且 `dt=0.01`，应设置 `duration=149.99`，这样输出时间为 `0.00 ~ 149.99 s`，正好使用全部 15000 个点。
+
+`ax_scale` 和 `ay_scale` 可用于单位换算或幅值缩放。例如输入文件单位为 `g`，而分析希望使用 `m/s^2`，可设置缩放系数为 `9.80665`。
+
+## 测试
+
+运行模型相关测试：
+
+```bash
+.venv/bin/python -m pytest py_scripts/model/tests
+```
+
+当前测试覆盖：
+
+- 对称结构在 X 向输入下扭转响应接近 0
+- 偏心结构能激发扭转响应
+- 测点刚性楼板映射公式
+- 对称构件布置的层刚度矩阵耦合项
+
+## 已知说明
+
+OpenSees 后端使用 `UniformExcitation`，输出为 OpenSees 节点相对响应；直接刚度后端也输出相对楼层响应，并在内存结果中保留了平动绝对加速度。两种方法在线弹性、小时间步下响应趋势和峰值时刻应保持一致，但由于 OpenSees 内部时程分析、约束处理和阻尼实现与直接矩阵积分并非完全同一路径，逐点误差不一定为零。

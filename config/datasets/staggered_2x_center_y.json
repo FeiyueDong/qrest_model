@@ -1,0 +1,51 @@
+{
+  "name": "staggered_2x_center_y",
+  "data_type": "staggered_2x_center_y",
+  "model_type": "story3d",
+  "description": "错层混合测点数据；1F、3F、7F、11F、16F 两侧 X 测点，1F、4F、8F、12F、16F 中心 Y 测点。",
+  "model": {
+    "num_stories": 16,
+    "dof_per_floor": ["Ux", "Uy", "Rz"],
+    "coordinate_reference": "geometry_center"
+  },
+  "floor_defaults": {
+    "mass": 1000000.0,
+    "jz": 8000000.0,
+    "mass_center": [0.2, 0.3],
+    "element_layout": "symmetric_four_corner",
+    "footprint": {
+      "x": [-5.0, 5.0],
+      "y": [-3.0, 3.0]
+    },
+    "element_stiffness": {
+      "kx": 200000000.0,
+      "ky": 200000000.0
+    }
+  },
+  "stories": {
+    "range": [1, 16]
+  },
+  "sensors": [
+    {
+      "layout": "two_x",
+      "stories": [1, 3, 7, 11, 16]
+    },
+    {
+      "layout": "center_y",
+      "stories": [1, 4, 8, 12, 16]
+    }
+  ],
+  "damping": {
+    "type": "rayleigh",
+    "zeta": 0.02,
+    "modes": [1, 3]
+  },
+  "ground_motion": {
+    "dt": 0.02,
+    "duration": 299.98,
+    "ax_file": "input/gm_x.txt",
+    "ay_file": "input/gm_y.txt",
+    "ax_scale": 1.0,
+    "ay_scale": 1.0
+  }
+}

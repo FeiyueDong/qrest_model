@@ -1,0 +1,34 @@
+{
+  "name": "single_x",
+  "data_type": "single_direction",
+  "model_type": "shear1d",
+  "description": "单向 X 数据；每层一个平动自由度，测点为 1F、3F、7F、11F、16F 的 X 向响应。",
+  "model": {
+    "num_stories": 16,
+    "dof_per_floor": ["Ux"]
+  },
+  "floor_defaults": {
+    "mass": 1000000.0,
+    "stiffness": 800000000.0
+  },
+  "stories": {
+    "range": [1, 16]
+  },
+  "sensors": [
+    {
+      "layout": "single_x",
+      "stories": [1, 3, 7, 11, 16]
+    }
+  ],
+  "damping": {
+    "type": "rayleigh",
+    "zeta": 0.02,
+    "modes": [1, 3]
+  },
+  "ground_motion": {
+    "dt": 0.02,
+    "duration": 299.98,
+    "ax_file": "input/gm_x.txt",
+    "ax_scale": 1.0
+  }
+}

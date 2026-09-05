@@ -1,0 +1,43 @@
+{
+  "model": {
+    "num_stories": 16,
+    "dof_per_floor": ["Ux"]
+  },
+  "floor_defaults": {
+    "mass": 1000000.0
+  },
+  "stories": [
+    {"story": 1, "stiffness": 800000000.0},
+    {"story": 2, "stiffness": 789333333.3333334},
+    {"story": 3, "stiffness": 778666666.6666666},
+    {"story": 4, "stiffness": 768000000.0},
+    {"story": 5, "stiffness": 757333333.3333334},
+    {"story": 6, "stiffness": 746666666.6666666},
+    {"story": 7, "stiffness": 736000000.0},
+    {"story": 8, "stiffness": 725333333.3333334},
+    {"story": 9, "stiffness": 714666666.6666666},
+    {"story": 10, "stiffness": 704000000.0},
+    {"story": 11, "stiffness": 693333333.3333334},
+    {"story": 12, "stiffness": 682666666.6666666},
+    {"story": 13, "stiffness": 672000000.0},
+    {"story": 14, "stiffness": 661333333.3333334},
+    {"story": 15, "stiffness": 650666666.6666666},
+    {"story": 16, "stiffness": 640000000.0}
+  ],
+  "sensors": [
+    {"id": "roof_accel_x", "story": 16, "quantity": "accel"},
+    {"id": "roof_disp_x", "story": 16, "quantity": "disp"},
+    {"id": "mid_story_accel_x", "story": 8, "quantity": "accel"}
+  ],
+  "damping": {
+    "type": "rayleigh",
+    "zeta": 0.02,
+    "modes": [1, 3]
+  },
+  "ground_motion": {
+    "dt": 0.01,
+    "duration": 149.99,
+    "ax_file": "../../input/gm_x.txt",
+    "ax_scale": 1.0
+  }
+}
