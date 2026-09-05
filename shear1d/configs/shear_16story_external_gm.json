@@ -1,5 +1,7 @@
 {
+  "schema_version": "2.0",
   "model": {
+    "type": "shear_building_1d",
     "num_stories": 16,
     "dof_per_floor": ["Ux"]
   },

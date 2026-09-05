@@ -2,27 +2,36 @@ from __future__ import annotations
 import json
 import os
 
+from qrest_model.analysis.linear_system import LinearSystem
+from qrest_model.analysis.modal import modal_analysis
+from qrest_model.analysis.newmark import NewmarkSolver
+from qrest_model.analysis.result import AnalysisResult
+from qrest_model.backends.base import DirectBackend, run_analysis
+from qrest_model.cli import main as cli_main
 from qrest_model.theory.story_stiffness import story_stiffness
 from qrest_model.theory.shear_stiffness import assemble_shear_stiffness
-from qrest_model.theory.sensor_mapping import map_floor_motion
-from qrest_model.common.shear_config import load_shear_config, normalize_shear_config
+from qrest_model.postprocess.sensor_mapping import map_floor_motion
+from qrest_model.schema import load_shear_config, normalize_shear_config
 from qrest_model.common.ground_motion import load_ground_motion
-from qrest_model.common.config import load_config, normalize_config
+from qrest_model.schema import load_config, normalize_config
+from qrest_model.datasets.cases import DATASET_CONFIG_ROOT, DatasetCase, dataset_cases
+from qrest_model.datasets.validation import validate_opensees_sensor_nodes
+from qrest_model.exporters.qrest_dataset import export_dataset
+from qrest_model.exporters.structural_properties import write_structural_properties
+from qrest_model.exporters.time_history import write_story3d_master_time_history
 from qrest_model.backends.direct_shear import run as run_direct_shear
+from qrest_model.backends.direct_shear import run_result as run_direct_shear_result
 from qrest_model.backends.direct_stiffness import run
-from scripts.build_datasets import (
-    DATASET_CONFIG_ROOT,
-    DatasetCase,
-    dataset_cases,
-    _write_story3d_master_time_history,
-    _write_structural_properties,
-    _validate_opensees_sensor_nodes,
-)
+from qrest_model.backends.direct_stiffness import run_result as run_direct_stiffness_result
+from scripts import build_datasets as legacy_build_datasets
+from scripts import export_datasets as legacy_export_datasets
 from scripts.make_metadata import build_qrest_metadata
 from scripts.make_algorithm_configs import write_algorithm_configs
 from scripts.map_sensors import map_sensors
-from scripts.export_datasets import export_dataset
-from py_algorithm.data_struct.metadata import Metadata
+try:
+    from py_algorithm.data_struct.metadata import Metadata
+except ImportError:
+    Metadata = None  # type: ignore[assignment]
 
 from pathlib import Path
 import sys
@@ -37,7 +46,9 @@ if str(MODEL_ROOT) not in sys.path:
 
 def _base_raw(num_stories: int = 3) -> dict:
     return {
+        "schema_version": "2.0",
         "model": {
+            "type": "rigid_floor_shear_3d",
             "num_stories": num_stories,
             "dof_per_floor": ["Ux", "Uy", "Rz"],
             "coordinate_reference": "geometry_center",
@@ -47,10 +58,10 @@ def _base_raw(num_stories: int = 3) -> dict:
             "jz": 8.0e6,
             "mass_center": [0.0, 0.0],
             "elements": [
-                {"x": -5.0, "y": -3.0, "kx": 2.0e8, "ky": 2.0e8},
-                {"x": 5.0, "y": -3.0, "kx": 2.0e8, "ky": 2.0e8},
-                {"x": 5.0, "y": 3.0, "kx": 2.0e8, "ky": 2.0e8},
-                {"x": -5.0, "y": 3.0, "kx": 2.0e8, "ky": 2.0e8},
+                {"id": "corner_sw", "x": -5.0, "y": -3.0, "kx": 2.0e8, "ky": 2.0e8},
+                {"id": "corner_se", "x": 5.0, "y": -3.0, "kx": 2.0e8, "ky": 2.0e8},
+                {"id": "corner_ne", "x": 5.0, "y": 3.0, "kx": 2.0e8, "ky": 2.0e8},
+                {"id": "corner_nw", "x": -5.0, "y": 3.0, "kx": 2.0e8, "ky": 2.0e8},
             ],
         },
         "stories": [{"story": i + 1} for i in range(num_stories)],
@@ -67,6 +78,58 @@ def _base_raw(num_stories: int = 3) -> dict:
             "synthetic": {"amplitude_x": 0.12, "amplitude_y": 0.0, "frequency_x": 1.0},
         },
     }
+
+
+def test_legacy_config_warns_and_infers_schema_fields() -> None:
+    raw = _base_raw()
+    del raw["schema_version"]
+    del raw["model"]["type"]
+
+    with pytest.warns(UserWarning, match="Missing schema_version"):
+        with pytest.warns(UserWarning, match="Missing model.type"):
+            config = normalize_config(raw)
+
+    assert config.schema_version == "legacy"
+    assert config.model_type == "rigid_floor_shear_3d"
+
+
+def test_common_config_modules_reexport_schema_entry_points() -> None:
+    from qrest_model.common import config as legacy_config
+    from qrest_model.common import shear_config as legacy_shear_config
+
+    assert legacy_config.normalize_config is normalize_config
+    assert legacy_shear_config.normalize_shear_config is normalize_shear_config
+
+
+def test_schema_version_and_model_type_are_strict() -> None:
+    raw = _base_raw()
+    raw["schema_version"] = "1.0"
+    with pytest.raises(ValueError, match="Unsupported schema_version"):
+        normalize_config(raw)
+
+    raw = _base_raw()
+    raw["model"]["type"] = "shear_building_1d"
+    with pytest.raises(ValueError, match="Unsupported model.type"):
+        normalize_config(raw)
+
+
+def test_rayleigh_modes_are_not_silently_truncated() -> None:
+    raw = _base_raw()
+    raw["damping"] = {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2, 3]}
+
+    with pytest.raises(ValueError, match="exactly two"):
+        normalize_config(raw)
+
+
+def test_duplicate_sensor_ids_are_rejected() -> None:
+    raw = _base_raw()
+    raw["sensors"] = [
+        {"id": "dup", "story": 1, "x": 0.0, "y": 0.0, "direction": "X"},
+        {"id": "dup", "story": 2, "x": 0.0, "y": 0.0, "direction": "X"},
+    ]
+
+    with pytest.raises(ValueError, match="Sensor ID 'dup'"):
+        normalize_config(raw)
 
 
 def test_symmetric_structure_x_input_has_near_zero_torsion() -> None:
@@ -115,6 +178,46 @@ def test_direct_backend_exposes_absolute_translational_response() -> None:
     assert "relative_value" in result["sensor_rows"][0]
 
 
+def test_direct_stiffness_run_result_matches_legacy_dict() -> None:
+    config = normalize_config(_base_raw(num_stories=2))
+
+    structured = run_direct_stiffness_result(config)
+    legacy = run(config)
+    converted = structured.to_legacy_dict()
+
+    assert isinstance(structured, AnalysisResult)
+    for key in ("displacement", "velocity", "acceleration", "absolute_acceleration"):
+        assert np.allclose(converted[key], legacy[key])
+    assert converted["metadata"]["backend"] == "direct_stiffness"
+    assert converted["sensor_rows"][0]["node_or_sensor_id"] == legacy["sensor_rows"][0]["node_or_sensor_id"]
+
+
+def test_direct_backend_unified_entry_runs_rigid_floor_case() -> None:
+    result = run_analysis(_base_raw(num_stories=2), backend="direct")
+
+    assert isinstance(result, AnalysisResult)
+    assert result.metadata.backend == "direct_stiffness"
+    assert result.relative.displacement.shape == (101, 2, 3)
+
+
+def test_cli_run_writes_direct_backend_outputs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    output = tmp_path / "run_output"
+
+    exit_code = cli_main([
+        "run",
+        "story3d/configs/default_10story.json",
+        "--backend",
+        "direct",
+        "--output",
+        str(output),
+    ])
+
+    assert exit_code == 0
+    assert (output / "master_response.csv").exists()
+    assert (output / "sensor_response.csv").exists()
+    assert str(output) in capsys.readouterr().out
+
+
 def test_invalid_sensor_story_reports_clear_error() -> None:
     raw = _base_raw(num_stories=2)
     raw["sensors"] = [{"id": "bad", "story": 3,
@@ -143,6 +246,31 @@ def test_story_stiffness_symmetric_layout_has_no_coupling() -> None:
     assert np.allclose(stiffness, stiffness.T)
 
 
+def test_newmark_solver_rejects_nonuniform_time_steps() -> None:
+    system = LinearSystem(
+        mass=np.eye(1),
+        damping=np.zeros((1, 1)),
+        stiffness=np.eye(1),
+        influence=np.ones(1),
+    )
+
+    with pytest.raises(ValueError, match="time step must be constant"):
+        NewmarkSolver().solve(system, np.array([0.0, 0.1, 0.25]), np.zeros(3))
+
+
+def test_modal_analysis_returns_mass_normalized_modes() -> None:
+    mass = np.diag([2.0, 1.0])
+    stiffness = np.array([[6.0, -2.0], [-2.0, 4.0]])
+
+    modal = modal_analysis(mass, stiffness)
+    pivots = np.argmax(np.abs(modal.mode_shapes), axis=0)
+
+    assert np.all(np.diff(modal.omega) > 0.0)
+    assert np.all(modal.mode_shapes[pivots, range(2)] > 0.0)
+    assert np.allclose(modal.mode_shapes.T @ mass @ modal.mode_shapes, np.eye(2))
+    assert np.allclose(modal.frequency, modal.omega / (2.0 * np.pi))
+
+
 def test_variable_16story_external_ground_motion_config() -> None:
     config_path = MODEL_ROOT / "story3d" / "configs" / \
         "variable_stiffness_16story_external_gm.json"
@@ -161,7 +289,8 @@ def test_variable_16story_external_ground_motion_config() -> None:
 def test_one_direction_shear_stiffness_assembly() -> None:
     config = normalize_shear_config(
         {
-            "model": {"num_stories": 3, "dof_per_floor": ["Ux"]},
+            "schema_version": "2.0",
+            "model": {"type": "shear_building_1d", "num_stories": 3, "dof_per_floor": ["Ux"]},
             "floor_defaults": {"mass": 1.0, "stiffness": 10.0},
             "stories": [{"story": 1}, {"story": 2, "stiffness": 8.0}, {"story": 3, "stiffness": 6.0}],
             "damping": {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2]},
@@ -178,7 +307,8 @@ def test_one_direction_shear_stiffness_assembly() -> None:
 def test_one_direction_shear_direct_backend_runs() -> None:
     config = normalize_shear_config(
         {
-            "model": {"num_stories": 3, "dof_per_floor": ["Ux"]},
+            "schema_version": "2.0",
+            "model": {"type": "shear_building_1d", "num_stories": 3, "dof_per_floor": ["Ux"]},
             "floor_defaults": {"mass": 1.0e6, "stiffness": 8.0e8},
             "stories": [{"story": 1}, {"story": 2}, {"story": 3}],
             "sensors": [{"id": "roof_accel", "story": 3, "quantity": "accel"}],
@@ -195,6 +325,109 @@ def test_one_direction_shear_direct_backend_runs() -> None:
     assert result["velocity"].shape == (51, 3)
     assert result["acceleration"].shape == (51, 3)
     assert len(result["sensor_rows"]) == 51
+
+
+def test_direct_shear_run_result_matches_legacy_dict() -> None:
+    config = normalize_shear_config(
+        {
+            "schema_version": "2.0",
+            "model": {"type": "shear_building_1d", "num_stories": 3, "dof_per_floor": ["Ux"]},
+            "floor_defaults": {"mass": 1.0e6, "stiffness": 8.0e8},
+            "stories": [{"story": 1}, {"story": 2}, {"story": 3}],
+            "sensors": [{"id": "roof_accel", "story": 3, "quantity": "accel"}],
+            "damping": {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2]},
+            "ground_motion": {
+                "dt": 0.01,
+                "duration": 0.5,
+                "synthetic": {"amplitude_x": 0.1, "amplitude_y": 0.0, "frequency_x": 1.0},
+            },
+        }
+    )
+
+    structured = run_direct_shear_result(config)
+    legacy = run_direct_shear(config)
+    converted = structured.to_legacy_dict()
+
+    assert isinstance(structured, AnalysisResult)
+    for key in ("displacement", "velocity", "acceleration"):
+        assert np.allclose(converted[key], legacy[key])
+    assert converted["metadata"]["backend"] == "direct_shear"
+    assert converted["metadata"]["direction"] == "X"
+
+
+def test_direct_backend_unified_entry_routes_shear_path(tmp_path: Path) -> None:
+    case_path = tmp_path / "shear.json"
+    case_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2.0",
+                "model": {"type": "shear_building_1d", "num_stories": 2, "dof_per_floor": ["Ux"]},
+                "floor_defaults": {"mass": 1.0e6, "stiffness": 8.0e8},
+                "stories": [{"story": 1}, {"story": 2}],
+                "sensors": [{"id": "roof_accel", "story": 2, "quantity": "accel"}],
+                "damping": {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2]},
+                "ground_motion": {
+                    "dt": 0.01,
+                    "duration": 0.1,
+                    "synthetic": {"amplitude_x": 0.1, "amplitude_y": 0.0, "frequency_x": 1.0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = DirectBackend().run(case_path)
+
+    assert result.metadata.backend == "direct_shear"
+    assert result.relative.displacement.shape == (11, 2)
+
+
+def test_cli_validate_can_compare_direct_backend_to_itself(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    metrics = tmp_path / "metrics.txt"
+
+    exit_code = cli_main([
+        "validate",
+        "shear1d/configs/shear_16story_external_gm.json",
+        "--backend-a",
+        "direct",
+        "--backend-b",
+        "direct",
+        "--output",
+        str(metrics),
+        "--tolerance",
+        "0.0",
+    ])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "displacement_max_abs: 0.000000e+00" in output
+    assert metrics.read_text(encoding="utf-8") == output
+
+
+def test_shear_config_rejects_duplicate_stories_and_nonpositive_values() -> None:
+    with pytest.raises(ValueError, match="defined more than once"):
+        normalize_shear_config(
+            {
+                "schema_version": "2.0",
+                "model": {"type": "shear_building_1d", "num_stories": 2, "dof_per_floor": ["Ux"]},
+                "floor_defaults": {"mass": 1.0, "stiffness": 10.0},
+                "stories": [{"story": 1}, {"story": 1}],
+                "damping": {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2]},
+                "ground_motion": {"dt": 0.01, "duration": 0.1},
+            }
+        )
+
+    with pytest.raises(ValueError, match="mass and stiffness must be positive"):
+        normalize_shear_config(
+            {
+                "schema_version": "2.0",
+                "model": {"type": "shear_building_1d", "num_stories": 2, "dof_per_floor": ["Ux"]},
+                "floor_defaults": {"mass": -1.0, "stiffness": 10.0},
+                "stories": [{"story": 1}, {"story": 2}],
+                "damping": {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2]},
+                "ground_motion": {"dt": 0.01, "duration": 0.1},
+            }
+        )
 
 
 def test_one_direction_16story_external_ground_motion_config() -> None:
@@ -259,6 +492,52 @@ def test_generated_dataset_case_definitions_cover_requested_channel_forms() -> N
     } == {1, 4, 8, 12, 16}
 
 
+def test_build_datasets_script_reexports_library_entry_points() -> None:
+    assert legacy_build_datasets.dataset_cases is dataset_cases
+    assert legacy_build_datasets._write_structural_properties is write_structural_properties
+
+
+def test_export_datasets_script_reexports_library_entry_points() -> None:
+    assert legacy_export_datasets.export_dataset is export_dataset
+
+
+def test_cli_generate_datasets_runs_selected_case(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    output_root = tmp_path / "datasets"
+
+    exit_code = cli_main([
+        "generate-datasets",
+        "--output-root",
+        str(output_root),
+        "--case",
+        "single_x",
+    ])
+
+    assert exit_code == 0
+    assert (output_root / "single_x" / "metadata.json").exists()
+    assert str(output_root / "single_x") in capsys.readouterr().out
+
+
+def test_cli_export_qrest_exports_generated_case(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    generated_root = tmp_path / "generated"
+    exported_root = tmp_path / "exported"
+    cli_main(["generate-datasets", "--output-root", str(generated_root), "--case", "single_x"])
+    capsys.readouterr()
+
+    exit_code = cli_main([
+        "export-qrest",
+        "--input",
+        str(generated_root / "single_x"),
+        "--output",
+        str(exported_root),
+    ])
+
+    exported = exported_root / "single_x"
+    assert exit_code == 0
+    assert (exported / "single_x_metadata.json").exists()
+    assert (exported / "single_x_data.txt").exists()
+    assert str(exported) in capsys.readouterr().out
+
+
 def test_master_and_sensor_time_history_are_wide_absolute_tables(tmp_path: Path) -> None:
     case = next(case for case in dataset_cases() if case.name == "two_x_one_y_torsion")
     config = normalize_config(
@@ -282,7 +561,7 @@ def test_master_and_sensor_time_history_are_wide_absolute_tables(tmp_path: Path)
     master_dir = tmp_path / "master"
     sensor_dir = tmp_path / "sensors"
     master_dir.mkdir()
-    _write_story3d_master_time_history(master_dir, result)
+    write_story3d_master_time_history(master_dir, result)
     map_sensors(
         case.config
         | {
@@ -313,6 +592,52 @@ def test_master_and_sensor_time_history_are_wide_absolute_tables(tmp_path: Path)
     assert len(acceleration) == 7
 
 
+def test_sensor_remapping_uses_story_specific_mass_center(tmp_path: Path) -> None:
+    raw = _base_raw(num_stories=2)
+    raw["stories"] = [
+        {"story": 1},
+        {"story": 2, "mass_center": [1.0, 0.0]},
+    ]
+    raw["sensors"] = [
+        {"id": "story2_y", "story": 2, "x": 1.0, "y": 0.0, "direction": "Y"},
+    ]
+    master_dir = tmp_path / "master"
+    sensor_dir = tmp_path / "sensors"
+    master_dir.mkdir()
+    header = "time,story_01_x,story_01_y,story_01_rz,story_02_x,story_02_y,story_02_rz\n"
+    body = "0.0,0.0,0.0,0.0,10.0,20.0,0.5\n"
+    for quantity in ("acceleration", "velocity", "displacement"):
+        (master_dir / f"{quantity}.csv").write_text(header + body, encoding="utf-8")
+
+    map_sensors(raw, master_dir, sensor_dir)
+
+    acceleration = (sensor_dir / "acceleration.csv").read_text(encoding="utf-8").splitlines()
+    assert acceleration == ["time,story2_y", "0.0,20.0"]
+
+
+def test_opensees_element_ids_allow_reordered_stories_and_reject_coordinate_jumps() -> None:
+    from qrest_model.backends.opensees_story import _validate_opensees_element_connectivity
+
+    raw = _base_raw(num_stories=2)
+    raw["stories"] = [
+        {"story": 1},
+        {
+            "story": 2,
+            "elements": [
+                {"id": "corner_se", "x": 5.0, "y": -3.0, "kx": 2.0e8, "ky": 2.0e8},
+                {"id": "corner_sw", "x": -5.0, "y": -3.0, "kx": 2.0e8, "ky": 2.0e8},
+                {"id": "corner_nw", "x": -5.0, "y": 3.0, "kx": 2.0e8, "ky": 2.0e8},
+                {"id": "corner_ne", "x": 5.0, "y": 3.0, "kx": 2.0e8, "ky": 2.0e8},
+            ],
+        },
+    ]
+    _validate_opensees_element_connectivity(normalize_config(raw))
+
+    raw["stories"][1]["elements"][0]["x"] = 5.1
+    with pytest.raises(ValueError, match="matching x/y coordinates"):
+        _validate_opensees_element_connectivity(normalize_config(raw))
+
+
 def test_structural_properties_are_written_for_generated_cases(tmp_path: Path) -> None:
     base_case = next(case for case in dataset_cases() if case.name == "two_x_one_y_torsion")
     raw_config = base_case.config | {
@@ -337,7 +662,7 @@ def test_structural_properties_are_written_for_generated_cases(tmp_path: Path) -
     )
     result = run(normalize_config(raw_config))
 
-    _write_structural_properties(case, tmp_path / "structural_properties", result)
+    write_structural_properties(case, tmp_path / "structural_properties", result)
 
     output = tmp_path / "structural_properties"
     assert (output / "mass_matrix.csv").exists()
@@ -382,7 +707,7 @@ def test_generated_algorithm_configs_follow_model_properties(tmp_path: Path) -> 
     dataset_dir.mkdir()
     (dataset_dir / "config.json").write_text(json.dumps(raw_config), encoding="utf-8")
     result = run(normalize_config(raw_config))
-    _write_structural_properties(case, dataset_dir / "structural_properties", result)
+    write_structural_properties(case, dataset_dir / "structural_properties", result)
     metadata = build_qrest_metadata(raw_config, npts=6, project_name="mini")
     (dataset_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 
@@ -448,7 +773,7 @@ def test_sensor_node_validation_accepts_rigid_mapping_result() -> None:
         for sensor in config.sensors
     )
 
-    metrics = _validate_opensees_sensor_nodes(raw, result)
+    metrics = validate_opensees_sensor_nodes(raw, result)
 
     assert metrics["sensor_node_disp_max_abs"] == 0.0
     assert metrics["sensor_node_vel_max_abs"] == 0.0
@@ -456,6 +781,8 @@ def test_sensor_node_validation_accepts_rigid_mapping_result() -> None:
 
 
 def test_qrest_metadata_generation_matches_model_sensors() -> None:
+    if Metadata is None:
+        pytest.skip("py_algorithm is required to validate qREST metadata parsing.")
     case = next(case for case in dataset_cases() if case.name == "two_x_one_y_torsion")
     metadata = build_qrest_metadata(case.config, npts=15000, project_name="test_project")
     parsed = Metadata.from_json(json.dumps(metadata))
@@ -479,6 +806,8 @@ def test_qrest_metadata_generation_matches_model_sensors() -> None:
 
 
 def test_staggered_special_metadata_matches_requested_layout() -> None:
+    if Metadata is None:
+        pytest.skip("py_algorithm is required to validate qREST metadata parsing.")
     case = next(case for case in dataset_cases() if case.name == "staggered_2x_center_y")
     metadata = build_qrest_metadata(case.config, npts=15000, project_name="staggered_test")
     parsed = Metadata.from_json(json.dumps(metadata))

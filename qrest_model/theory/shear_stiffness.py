@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from qrest_model.common.shear_config import ShearStoryConfig
+from qrest_model.schema import ShearStoryConfig
 
 
 def assemble_shear_mass(stories: tuple[ShearStoryConfig, ...]) -> np.ndarray:

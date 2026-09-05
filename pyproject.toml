@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qrest-model"
+version = "0.1.0"
+description = "Controllable structural dynamics models for qREST test data generation."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "scipy",
+]
+
+[project.optional-dependencies]
+opensees = ["openseespy"]
+yaml = ["PyYAML"]
+test = ["pytest"]
+
+[project.scripts]
+qrest-model = "qrest_model.cli:main"
+qrest-model-build-datasets = "scripts.build_datasets:main"
+qrest-model-map-sensors = "scripts.map_sensors:main"
+qrest-model-make-metadata = "scripts.make_metadata:main"
+qrest-model-export-datasets = "scripts.export_datasets:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["qrest_model*", "scripts"]

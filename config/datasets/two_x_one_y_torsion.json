@@ -4,6 +4,7 @@
   "model_type": "story3d",
   "description": "2X1Y 扭转数据；均匀侧向刚度，质量中心相对几何中心偏心。",
   "model": {
+    "type": "rigid_floor_shear_3d",
     "num_stories": 16,
     "dof_per_floor": ["Ux", "Uy", "Rz"],
     "coordinate_reference": "geometry_center"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from qrest_model.common.config import StoryConfig
+from qrest_model.schema import StoryConfig
 
 
 def story_stiffness_from_elements(story: StoryConfig) -> np.ndarray:

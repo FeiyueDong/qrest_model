@@ -1,5 +1,7 @@
 {
+  "schema_version": "2.0",
   "model": {
+    "type": "rigid_floor_shear_3d",
     "num_stories": 16,
     "dof_per_floor": ["Ux", "Uy", "Rz"],
     "coordinate_reference": "geometry_center"

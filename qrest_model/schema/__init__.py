@@ -1,22 +1,22 @@
-"""Compatibility imports for one-direction shear-building schema objects.
-
-New code should import from :mod:`qrest_model.schema`.
-"""
+"""Public configuration schema for qREST model cases."""
 
 from qrest_model.schema.case import (
-    DampingConfig,
-    GroundMotionConfig,
     SCHEMA_VERSION,
+    RIGID_FLOOR_SHEAR_3D,
     SHEAR_BUILDING_1D,
+    DampingConfig,
+    DirectStiffnessConfig,
+    ElementConfig,
+    GroundMotionConfig,
+    ModelConfig,
+    SensorConfig,
     ShearModelConfig,
     ShearSensorConfig,
     ShearStoryConfig,
-    _finite_float,
-    _normalize_model_type,
-    _normalize_schema_version,
-    _validate_story_ids,
-    _validate_unique_sensor_ids,
+    StoryConfig,
+    load_config,
     load_shear_config,
+    normalize_config,
     normalize_damping,
     normalize_ground_motion,
     normalize_shear_config,
@@ -24,13 +24,21 @@ from qrest_model.schema.case import (
 
 __all__ = [
     "SCHEMA_VERSION",
+    "RIGID_FLOOR_SHEAR_3D",
     "SHEAR_BUILDING_1D",
     "DampingConfig",
+    "DirectStiffnessConfig",
+    "ElementConfig",
     "GroundMotionConfig",
+    "ModelConfig",
+    "SensorConfig",
     "ShearModelConfig",
     "ShearSensorConfig",
     "ShearStoryConfig",
+    "StoryConfig",
+    "load_config",
     "load_shear_config",
+    "normalize_config",
     "normalize_damping",
     "normalize_ground_motion",
     "normalize_shear_config",

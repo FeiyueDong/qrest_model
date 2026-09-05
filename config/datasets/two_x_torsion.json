@@ -4,6 +4,7 @@
   "model_type": "story3d",
   "description": "2X 单向平动+扭转数据；只施加 X 向输入，两个 X 测点用于识别平动和 Rz 贡献。",
   "model": {
+    "type": "rigid_floor_shear_3d",
     "num_stories": 16,
     "dof_per_floor": ["Ux", "Uy", "Rz"],
     "coordinate_reference": "geometry_center"

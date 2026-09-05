@@ -14,6 +14,8 @@ if str(MODEL_ROOT) not in sys.path:
     sys.path.insert(0, str(MODEL_ROOT))
 
 from scripts.make_metadata import build_qrest_metadata, write_qrest_metadata
+from qrest_model.schema import normalize_config
+from qrest_model.schema import normalize_shear_config
 
 
 def map_sensors(
@@ -46,20 +48,20 @@ def map_sensors(
 
 
 def _map_story3d_sensors(config: dict[str, Any], master_dir: Path, output_dir: Path) -> None:
-    mass_center = tuple(float(v) for v in config.get("floor_defaults", {}).get("mass_center", [0.0, 0.0]))
+    model_config = normalize_config(config)
     for quantity in ("acceleration", "velocity", "displacement"):
         master = _read_wide_csv(master_dir / f"{quantity}.csv")
         rows = []
         for step, t in enumerate(master["time"]):
             row = {"time": t}
-            for sensor in config.get("sensors", []):
-                story = int(sensor["story"])
-                x = float(sensor.get("x", 0.0)) - mass_center[0]
-                y = float(sensor.get("y", 0.0)) - mass_center[1]
+            for sensor in model_config.sensors:
+                story = sensor.story
+                x = sensor.x
+                y = sensor.y
                 ux = master[f"story_{story:02d}_x"][step]
                 uy = master[f"story_{story:02d}_y"][step]
                 rz = master[f"story_{story:02d}_rz"][step]
-                direction = str(sensor.get("direction", "X")).upper()
+                direction = sensor.direction
                 if direction == "X":
                     value = ux - y * rz
                 elif direction == "Y":
@@ -68,26 +70,29 @@ def _map_story3d_sensors(config: dict[str, Any], master_dir: Path, output_dir: P
                     value = rz
                 else:
                     raise ValueError(f"Unsupported story3d sensor direction: {direction}")
-                row[str(sensor["id"])] = value
+                row[sensor.sensor_id] = value
             rows.append(row)
         _write_rows(output_dir / f"{quantity}.csv", rows)
 
 
 def _map_shear_sensors(config: dict[str, Any], master_dir: Path, output_dir: Path) -> None:
-    direction = str(config.get("model", {}).get("dof_per_floor", ["Ux"])[0])[-1].lower()
+    model_config = normalize_shear_config(config)
+    direction = model_config.direction.lower()
     for quantity in ("acceleration", "velocity", "displacement"):
         master = _read_wide_csv(master_dir / f"{quantity}.csv")
         rows = []
         for step, t in enumerate(master["time"]):
             row = {"time": t}
-            for sensor in config.get("sensors", []):
-                story = int(sensor["story"])
-                row[str(sensor["id"])] = master[f"story_{story:02d}_{direction}"][step]
+            for sensor in model_config.sensors:
+                row[sensor.sensor_id] = master[f"story_{sensor.story:02d}_{direction}"][step]
             rows.append(row)
         _write_rows(output_dir / f"{quantity}.csv", rows)
 
 
 def _is_shear_config(config: dict[str, Any]) -> bool:
+    model_type = config.get("model", {}).get("type")
+    if model_type is not None:
+        return str(model_type) == "shear_building_1d"
     dof = tuple(config.get("model", {}).get("dof_per_floor", []))
     return dof in {("Ux",), ("Uy",)}
 

@@ -4,6 +4,7 @@
   "model_type": "shear1d",
   "description": "单向 X 数据；每层一个平动自由度，测点为 1F、3F、7F、11F、16F 的 X 向响应。",
   "model": {
+    "type": "shear_building_1d",
     "num_stories": 16,
     "dof_per_floor": ["Ux"]
   },

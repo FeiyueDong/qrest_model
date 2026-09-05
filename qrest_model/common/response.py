@@ -35,6 +35,8 @@ def add_absolute_floor_response(
     response["ground_displacement"] = ground["displacement"]
     response["ground_velocity"] = ground["velocity"]
     response["ground_acceleration"] = ground["acceleration"]
+    response["ground_displacement_source"] = "integrated_from_acceleration"
+    response["ground_velocity_source"] = "integrated_from_acceleration"
     response["absolute_displacement"] = _add_ground(response["displacement"], ground["displacement"])
     response["absolute_velocity"] = _add_ground(response["velocity"], ground["velocity"])
     response["absolute_acceleration"] = _add_ground(response["acceleration"], ground["acceleration"])

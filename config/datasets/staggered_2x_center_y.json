@@ -4,6 +4,7 @@
   "model_type": "story3d",
   "description": "错层混合测点数据；1F、3F、7F、11F、16F 两侧 X 测点，1F、4F、8F、12F、16F 中心 Y 测点。",
   "model": {
+    "type": "rigid_floor_shear_3d",
     "num_stories": 16,
     "dof_per_floor": ["Ux", "Uy", "Rz"],
     "coordinate_reference": "geometry_center"

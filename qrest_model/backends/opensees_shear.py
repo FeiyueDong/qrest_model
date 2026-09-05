@@ -7,20 +7,28 @@ from typing import Any
 
 import numpy as np
 
+from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory, SensorResult
 from qrest_model.common.damping import rayleigh_coefficients
 from qrest_model.common.ground_motion import load_ground_motion
-from qrest_model.common.io import ensure_output_dir, write_matrix, write_metadata, write_sensor_csv
 from qrest_model.common.opensees import import_opensees
-from qrest_model.common.shear_config import ShearModelConfig, load_shear_config
+from qrest_model.schema import ShearModelConfig, load_shear_config
+from qrest_model.exporters.backend_outputs import write_shear_outputs
+from qrest_model.models.shear_building import ShearBuildingModel
 from qrest_model.theory.shear_stiffness import (
-    assemble_shear_mass,
-    assemble_shear_stiffness,
     shear_story_stiffness_table,
 )
-from qrest_model.backends.direct_shear import build_sensor_rows, write_shear_master_csv
+from qrest_model.backends.direct_shear import build_sensor_rows
 
 
 def run(config: ShearModelConfig | str | Path, output_dir: str | Path | None = None) -> dict[str, Any]:
+    result = run_result(config)
+    legacy = result.to_legacy_dict()
+    if output_dir is not None:
+        write_outputs(legacy, output_dir)
+    return legacy
+
+
+def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
     ops = import_opensees()
     if not isinstance(config, ShearModelConfig):
         config_path = Path(config)
@@ -32,30 +40,32 @@ def run(config: ShearModelConfig | str | Path, output_dir: str | Path | None = N
 
     ground = load_ground_motion(model_config.ground_motion, base_dir)
     ground_accel = ground["ax"] if model_config.direction == "X" else ground["ay"]
-    mass = assemble_shear_mass(model_config.stories)
-    stiffness = assemble_shear_stiffness(model_config.stories)
+    structural_model = ShearBuildingModel.from_config(model_config)
+    mass = structural_model.mass_matrix()
+    stiffness = structural_model.stiffness_matrix()
     alpha, beta = rayleigh_coefficients(mass, stiffness, model_config.damping)
     response = _run_opensees(
         ops, model_config, ground["time"], ground_accel, alpha, beta)
-    response.update(
-        {
-            "sensor_rows": build_sensor_rows(model_config, response),
-            "mass_matrix": mass,
-            "stiffness_matrix": stiffness,
-            "damping_matrix": alpha * mass + beta * stiffness,
-            "story_stiffness_rows": shear_story_stiffness_table(model_config.stories),
-            "metadata": {
-                "backend": "opensees_shear",
-                "direction": model_config.direction,
-                "response_definition": "OpenSees UniformExcitation relative one-direction node response",
-                "rayleigh_alpha": alpha,
-                "rayleigh_beta": beta,
-            },
-        }  # type: ignore
+    return AnalysisResult(
+        time=response["time"],
+        relative=ResponseHistory(
+            displacement=response["displacement"],
+            velocity=response["velocity"],
+            acceleration=response["acceleration"],
+        ),
+        sensors=SensorResult(rows=build_sensor_rows(model_config, response)),
+        mass_matrix=mass,
+        stiffness_matrix=stiffness,
+        damping_matrix=alpha * mass + beta * stiffness,
+        metadata=AnalysisMetadata(
+            backend="opensees_shear",
+            response_definition="OpenSees UniformExcitation relative one-direction node response",
+            rayleigh_alpha=alpha,
+            rayleigh_beta=beta,
+            extras={"direction": model_config.direction},
+        ),
+        story_stiffness_rows=shear_story_stiffness_table(model_config.stories),
     )
-    if output_dir is not None:
-        write_outputs(response, output_dir)
-    return response
 
 
 def _run_opensees(
@@ -123,12 +133,4 @@ def _run_opensees(
 
 
 def write_outputs(result: dict[str, Any], output_dir: str | Path) -> None:
-    output = ensure_output_dir(output_dir)
-    write_shear_master_csv(output / "master_response.csv", result)
-    write_sensor_csv(output / "sensor_response.csv", result["sensor_rows"])
-    write_matrix(output / "mass_matrix.txt", result["mass_matrix"])
-    write_matrix(output / "stiffness_matrix.txt", result["stiffness_matrix"])
-    write_matrix(output / "damping_matrix.txt", result["damping_matrix"])
-    write_sensor_csv(output / "story_stiffness_theory.txt",
-                     result["story_stiffness_rows"])
-    write_metadata(output / "metadata.txt", result["metadata"])
+    write_shear_outputs(result, output_dir)

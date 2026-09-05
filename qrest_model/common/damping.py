@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from .config import DampingConfig
+from qrest_model.analysis.modal import modal_analysis
+
+from qrest_model.schema import DampingConfig
 
 
 def rayleigh_coefficients(mass: np.ndarray, stiffness: np.ndarray, config: DampingConfig) -> tuple[float, float]:
     if config.zeta < 0.0:
         raise ValueError("Rayleigh damping ratio must be non-negative.")
-    eigvals = np.linalg.eigvals(np.linalg.solve(mass, stiffness))
-    eigvals = np.real_if_close(eigvals, tol=1000)
-    eigvals = np.real(eigvals)
-    omegas = np.sqrt(np.sort(eigvals[eigvals > 0.0]))
+    omegas = modal_analysis(mass, stiffness).omega
     if omegas.size < max(config.modes):
         raise ValueError("Not enough positive modes to compute Rayleigh damping.")
     w1 = omegas[config.modes[0] - 1]
