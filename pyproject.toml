@@ -28,3 +28,8 @@ qrest-model-export-datasets = "scripts.export_datasets:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["qrest_model*", "scripts"]
+
+[tool.pytest.ini_options]
+markers = [
+  "opensees: tests that require OpenSeesPy and compare OpenSees backends against direct backends",
+]

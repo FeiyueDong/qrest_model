@@ -7,25 +7,26 @@ from typing import Any
 
 import numpy as np
 
+from qrest_model.analysis.modal import modal_analysis
 from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory, SensorResult
 from qrest_model.common.damping import rayleigh_coefficients
 from qrest_model.common.ground_motion import load_ground_motion
 from qrest_model.common.opensees import import_opensees
+from qrest_model.common.response import add_absolute_shear_response
 from qrest_model.schema import ShearModelConfig, load_shear_config
 from qrest_model.exporters.backend_outputs import write_shear_outputs
 from qrest_model.models.shear_building import ShearBuildingModel
 from qrest_model.theory.shear_stiffness import (
     shear_story_stiffness_table,
 )
-from qrest_model.backends.direct_shear import build_sensor_rows
+from qrest_model.backends.direct_shear import build_sensor_result
 
 
 def run(config: ShearModelConfig | str | Path, output_dir: str | Path | None = None) -> dict[str, Any]:
     result = run_result(config)
-    legacy = result.to_legacy_dict()
     if output_dir is not None:
-        write_outputs(legacy, output_dir)
-    return legacy
+        write_outputs(result, output_dir)
+    return result.to_legacy_dict()
 
 
 def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
@@ -46,6 +47,7 @@ def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
     alpha, beta = rayleigh_coefficients(mass, stiffness, model_config.damping)
     response = _run_opensees(
         ops, model_config, ground["time"], ground_accel, alpha, beta)
+    add_absolute_shear_response(response, ground["ax"], ground["ay"], model_config.direction)
     return AnalysisResult(
         time=response["time"],
         relative=ResponseHistory(
@@ -53,16 +55,34 @@ def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
             velocity=response["velocity"],
             acceleration=response["acceleration"],
         ),
-        sensors=SensorResult(rows=build_sensor_rows(model_config, response)),
+        absolute=ResponseHistory(
+            displacement=response["absolute_displacement"],
+            velocity=response["absolute_velocity"],
+            acceleration=response["absolute_acceleration"],
+        ),
+        ground=ResponseHistory(
+            displacement=response["ground_displacement"],
+            velocity=response["ground_velocity"],
+            acceleration=response["ground_acceleration"],
+        ),
+        sensors=build_sensor_result(model_config, response),
         mass_matrix=mass,
         stiffness_matrix=stiffness,
         damping_matrix=alpha * mass + beta * stiffness,
+        modal=modal_analysis(mass, stiffness),
         metadata=AnalysisMetadata(
             backend="opensees_shear",
-            response_definition="OpenSees UniformExcitation relative one-direction node response",
+            response_definition=(
+                "OpenSees UniformExcitation one-direction response; relative is node response, "
+                "absolute includes the selected ground translation component"
+            ),
             rayleigh_alpha=alpha,
             rayleigh_beta=beta,
-            extras={"direction": model_config.direction},
+            extras={
+                "direction": model_config.direction,
+                "ground_displacement_source": response["ground_displacement_source"],
+                "ground_velocity_source": response["ground_velocity_source"],
+            },
         ),
         story_stiffness_rows=shear_story_stiffness_table(model_config.stories),
     )
@@ -132,5 +152,5 @@ def _run_opensees(
     return {"time": time, "displacement": disp, "velocity": vel, "acceleration": acc}
 
 
-def write_outputs(result: dict[str, Any], output_dir: str | Path) -> None:
+def write_outputs(result: AnalysisResult | dict[str, Any], output_dir: str | Path) -> None:
     write_shear_outputs(result, output_dir)

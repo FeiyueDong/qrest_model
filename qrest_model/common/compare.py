@@ -8,15 +8,25 @@ from typing import Any
 
 import numpy as np
 
+from qrest_model.analysis.result import AnalysisResult
 
-def compare_master_arrays(a: dict[str, Any], b: dict[str, Any]) -> dict[str, float]:
+
+def compare_master_arrays(a: AnalysisResult | dict[str, Any], b: AnalysisResult | dict[str, Any]) -> dict[str, float]:
     metrics: dict[str, float] = {}
     for key in ("displacement", "velocity", "acceleration"):
-        diff = np.asarray(a[key]) - np.asarray(b[key])
-        denom = max(np.linalg.norm(np.asarray(a[key])), np.linalg.norm(np.asarray(b[key])), 1.0)
+        a_values = _response_array(a, key)
+        b_values = _response_array(b, key)
+        diff = a_values - b_values
+        denom = max(np.linalg.norm(a_values), np.linalg.norm(b_values), 1.0)
         metrics[f"{key}_max_abs"] = float(np.max(np.abs(diff)))
         metrics[f"{key}_relative_l2"] = float(np.linalg.norm(diff) / denom)
     return metrics
+
+
+def _response_array(result: AnalysisResult | dict[str, Any], key: str) -> np.ndarray:
+    if isinstance(result, AnalysisResult):
+        return np.asarray(getattr(result.relative, key), dtype=float)
+    return np.asarray(result[key], dtype=float)
 
 
 def compare_master_csv(path_a: str | Path, path_b: str | Path) -> dict[str, float]:

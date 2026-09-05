@@ -42,6 +42,24 @@ def add_absolute_floor_response(
     response["absolute_acceleration"] = _add_ground(response["acceleration"], ground["acceleration"])
 
 
+def add_absolute_shear_response(
+    response: dict,
+    ground_ax: np.ndarray,
+    ground_ay: np.ndarray,
+    direction: str,
+) -> None:
+    ground = ground_kinematics(response["time"], ground_ax, ground_ay)
+    response["ground_displacement"] = ground["displacement"]
+    response["ground_velocity"] = ground["velocity"]
+    response["ground_acceleration"] = ground["acceleration"]
+    response["ground_displacement_source"] = "integrated_from_acceleration"
+    response["ground_velocity_source"] = "integrated_from_acceleration"
+    ground_index = 0 if direction.upper() == "X" else 1
+    response["absolute_displacement"] = response["displacement"] + ground["displacement"][:, ground_index, None]
+    response["absolute_velocity"] = response["velocity"] + ground["velocity"][:, ground_index, None]
+    response["absolute_acceleration"] = response["acceleration"] + ground["acceleration"][:, ground_index, None]
+
+
 def _integrate_trapezoid(time: np.ndarray, values: np.ndarray) -> np.ndarray:
     integrated = np.zeros_like(values, dtype=float)
     for i in range(1, values.size):

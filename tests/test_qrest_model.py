@@ -5,18 +5,20 @@ import os
 from qrest_model.analysis.linear_system import LinearSystem
 from qrest_model.analysis.modal import modal_analysis
 from qrest_model.analysis.newmark import NewmarkSolver
-from qrest_model.analysis.result import AnalysisResult
+from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory
 from qrest_model.backends.base import DirectBackend, run_analysis
 from qrest_model.cli import main as cli_main
 from qrest_model.theory.story_stiffness import story_stiffness
 from qrest_model.theory.shear_stiffness import assemble_shear_stiffness
-from qrest_model.postprocess.sensor_mapping import map_floor_motion
+from qrest_model.postprocess import map_floor_motion, map_sensors
 from qrest_model.schema import load_shear_config, normalize_shear_config
 from qrest_model.common.ground_motion import load_ground_motion
 from qrest_model.schema import load_config, normalize_config
 from qrest_model.datasets.cases import DATASET_CONFIG_ROOT, DatasetCase, dataset_cases
 from qrest_model.datasets.validation import validate_opensees_sensor_nodes
+from qrest_model.exporters.algorithm_config import write_algorithm_configs
 from qrest_model.exporters.qrest_dataset import export_dataset
+from qrest_model.exporters.qrest_metadata import build_qrest_metadata
 from qrest_model.exporters.structural_properties import write_structural_properties
 from qrest_model.exporters.time_history import write_story3d_master_time_history
 from qrest_model.backends.direct_shear import run as run_direct_shear
@@ -25,9 +27,9 @@ from qrest_model.backends.direct_stiffness import run
 from qrest_model.backends.direct_stiffness import run_result as run_direct_stiffness_result
 from scripts import build_datasets as legacy_build_datasets
 from scripts import export_datasets as legacy_export_datasets
-from scripts.make_metadata import build_qrest_metadata
-from scripts.make_algorithm_configs import write_algorithm_configs
-from scripts.map_sensors import map_sensors
+from scripts import make_algorithm_configs as legacy_algorithm_configs
+from scripts import make_metadata as legacy_metadata
+from scripts import map_sensors as legacy_map_sensors
 try:
     from py_algorithm.data_struct.metadata import Metadata
 except ImportError:
@@ -42,6 +44,7 @@ import pytest
 MODEL_ROOT = Path(__file__).resolve().parents[1]
 if str(MODEL_ROOT) not in sys.path:
     sys.path.insert(0, str(MODEL_ROOT))
+REFERENCE_ROOT = MODEL_ROOT / "tests" / "reference"
 
 
 def _base_raw(num_stories: int = 3) -> dict:
@@ -78,6 +81,96 @@ def _base_raw(num_stories: int = 3) -> dict:
             "synthetic": {"amplitude_x": 0.12, "amplitude_y": 0.0, "frequency_x": 1.0},
         },
     }
+
+
+def _golden_rigid_raw() -> dict:
+    raw = _base_raw(num_stories=3)
+    raw["sensors"] = [{"id": "roof_x", "story": 3, "x": 5.0, "y": 3.0, "direction": "X"}]
+    raw["ground_motion"] = {
+        "dt": 0.01,
+        "duration": 0.1,
+        "synthetic": {"amplitude_x": 0.12, "amplitude_y": 0.0, "frequency_x": 1.0},
+    }
+    return raw
+
+
+def _golden_shear_raw() -> dict:
+    return {
+        "schema_version": "2.0",
+        "model": {"type": "shear_building_1d", "num_stories": 3, "dof_per_floor": ["Ux"]},
+        "floor_defaults": {"mass": 1.0e6, "stiffness": 8.0e8},
+        "stories": [{"story": 1}, {"story": 2}, {"story": 3}],
+        "sensors": [{"id": "roof_accel", "story": 3, "quantity": "accel"}],
+        "damping": {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2]},
+        "ground_motion": {
+            "dt": 0.01,
+            "duration": 0.1,
+            "synthetic": {"amplitude_x": 0.1, "amplitude_y": 0.0, "frequency_x": 1.0},
+        },
+    }
+
+
+def _analysis_signature(result: AnalysisResult) -> dict:
+    flat_disp = result.relative.displacement.reshape(result.time.size, -1)
+    flat_acc = result.relative.acceleration.reshape(result.time.size, -1)
+    indices = [0, 5, 10]
+    return {
+        "frequency_hz": result.modal.frequency[: min(6, result.modal.frequency.size)],
+        "peak_relative_displacement": np.max(np.abs(flat_disp), axis=0),
+        "peak_relative_acceleration": np.max(np.abs(flat_acc), axis=0),
+        "selected_indices": indices,
+        "selected_relative_displacement": flat_disp[indices],
+        "sensor_last_value": result.sensors.rows[-1]["value"],
+        "sensor_last_relative_value": result.sensors.rows[-1]["relative_value"],
+    }
+
+
+def _assert_signature_matches(result: AnalysisResult, reference_name: str) -> None:
+    reference = json.loads((REFERENCE_ROOT / reference_name).read_text(encoding="utf-8"))
+    signature = _analysis_signature(result)
+    assert signature["selected_indices"] == reference["selected_indices"]
+    for key in (
+        "frequency_hz",
+        "peak_relative_displacement",
+        "peak_relative_acceleration",
+        "selected_relative_displacement",
+    ):
+        assert np.allclose(signature[key], np.asarray(reference[key]), rtol=1.0e-8, atol=1.0e-12)
+    assert np.isclose(signature["sensor_last_value"], reference["sensor_last_value"], rtol=1.0e-8, atol=1.0e-12)
+    assert np.isclose(
+        signature["sensor_last_relative_value"],
+        reference["sensor_last_relative_value"],
+        rtol=1.0e-8,
+        atol=1.0e-12,
+    )
+
+
+def _require_opensees_tests() -> None:
+    if os.environ.get("QREST_RUN_OPENSEES_TESTS") != "1":
+        pytest.skip("Set QREST_RUN_OPENSEES_TESTS=1 to run OpenSeesPy validation.")
+
+
+def _assert_response_close(
+    direct: AnalysisResult,
+    opensees: AnalysisResult,
+    *,
+    displacement_atol: float = 1.0e-8,
+    velocity_atol: float = 1.0e-7,
+    acceleration_atol: float = 1.0e-6,
+) -> None:
+    assert np.allclose(direct.relative.displacement, opensees.relative.displacement, atol=displacement_atol, rtol=1.0e-7)
+    assert np.allclose(direct.relative.velocity, opensees.relative.velocity, atol=velocity_atol, rtol=1.0e-7)
+    assert np.allclose(direct.relative.acceleration, opensees.relative.acceleration, atol=acceleration_atol, rtol=1.0e-7)
+    assert np.allclose(direct.absolute.acceleration, opensees.absolute.acceleration, atol=acceleration_atol, rtol=1.0e-7)
+
+
+def _scaled_corner_elements(scale: float) -> list[dict]:
+    return [
+        {"id": "corner_sw", "x": -5.0, "y": -3.0, "kx": 2.0e8 * scale, "ky": 2.0e8 * scale},
+        {"id": "corner_se", "x": 5.0, "y": -3.0, "kx": 2.0e8 * scale, "ky": 2.0e8 * scale},
+        {"id": "corner_ne", "x": 5.0, "y": 3.0, "kx": 2.0e8 * scale, "ky": 2.0e8 * scale},
+        {"id": "corner_nw", "x": -5.0, "y": 3.0, "kx": 2.0e8 * scale, "ky": 2.0e8 * scale},
+    ]
 
 
 def test_legacy_config_warns_and_infers_schema_fields() -> None:
@@ -198,6 +291,15 @@ def test_direct_backend_unified_entry_runs_rigid_floor_case() -> None:
     assert isinstance(result, AnalysisResult)
     assert result.metadata.backend == "direct_stiffness"
     assert result.relative.displacement.shape == (101, 2, 3)
+    assert result.modal is not None
+    assert result.modal.frequency.size == 6
+
+
+def test_rigid_symmetric_golden_regression_signature() -> None:
+    _assert_signature_matches(
+        run_analysis(_golden_rigid_raw(), backend="direct"),
+        "rigid_symmetric_3story.json",
+    )
 
 
 def test_cli_run_writes_direct_backend_outputs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -246,6 +348,16 @@ def test_story_stiffness_symmetric_layout_has_no_coupling() -> None:
     assert np.allclose(stiffness, stiffness.T)
 
 
+def test_zero_torsional_story_stiffness_is_rejected_early() -> None:
+    raw = _base_raw(num_stories=1)
+    raw["floor_defaults"]["elements"] = [
+        {"id": "center", "x": 0.0, "y": 0.0, "kx": 2.0e8, "ky": 2.0e8},
+    ]
+
+    with pytest.raises(ValueError, match="Story 1 stiffness matrix.*positive definite"):
+        run_analysis(raw, backend="direct")
+
+
 def test_newmark_solver_rejects_nonuniform_time_steps() -> None:
     system = LinearSystem(
         mass=np.eye(1),
@@ -269,6 +381,59 @@ def test_modal_analysis_returns_mass_normalized_modes() -> None:
     assert np.all(modal.mode_shapes[pivots, range(2)] > 0.0)
     assert np.allclose(modal.mode_shapes.T @ mass @ modal.mode_shapes, np.eye(2))
     assert np.allclose(modal.frequency, modal.omega / (2.0 * np.pi))
+
+
+def test_analysis_result_rejects_nonmonotonic_time() -> None:
+    history = ResponseHistory(
+        displacement=np.zeros((3, 1)),
+        velocity=np.zeros((3, 1)),
+        acceleration=np.zeros((3, 1)),
+    )
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        AnalysisResult(
+            time=np.array([0.0, 0.1, 0.1]),
+            relative=history,
+            mass_matrix=np.eye(1),
+            stiffness_matrix=np.eye(1),
+            damping_matrix=np.zeros((1, 1)),
+            metadata=AnalysisMetadata(backend="test", response_definition="test"),
+        )
+
+
+def test_analysis_result_rejects_nonsymmetric_matrix() -> None:
+    history = ResponseHistory(
+        displacement=np.zeros((3, 2)),
+        velocity=np.zeros((3, 2)),
+        acceleration=np.zeros((3, 2)),
+    )
+
+    with pytest.raises(ValueError, match="stiffness_matrix must be symmetric"):
+        AnalysisResult(
+            time=np.array([0.0, 0.1, 0.2]),
+            relative=history,
+            mass_matrix=np.eye(2),
+            stiffness_matrix=np.array([[1.0, 2.0], [0.0, 1.0]]),
+            damping_matrix=np.zeros((2, 2)),
+            metadata=AnalysisMetadata(backend="test", response_definition="test"),
+        )
+
+
+def test_rayleigh_rejects_repeated_reference_frequencies() -> None:
+    raw = _base_raw(num_stories=1)
+    raw["damping"] = {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2]}
+
+    with pytest.raises(ValueError, match="nearly identical natural frequencies"):
+        run_analysis(raw, backend="direct")
+
+
+def test_zero_rayleigh_damping_returns_zero_matrix_even_for_repeated_modes() -> None:
+    raw = _base_raw(num_stories=1)
+    raw["damping"] = {"type": "rayleigh", "zeta": 0.0, "modes": [1, 2]}
+
+    result = run_analysis(raw, backend="direct")
+
+    assert np.allclose(result.damping_matrix, 0.0)
 
 
 def test_variable_16story_external_ground_motion_config() -> None:
@@ -355,6 +520,45 @@ def test_direct_shear_run_result_matches_legacy_dict() -> None:
     assert converted["metadata"]["direction"] == "X"
 
 
+def test_direct_shear_result_has_absolute_ground_and_sensor_semantics() -> None:
+    config = normalize_shear_config(
+        {
+            "schema_version": "2.0",
+            "model": {"type": "shear_building_1d", "num_stories": 2, "dof_per_floor": ["Ux"]},
+            "floor_defaults": {"mass": 1.0e6, "stiffness": 8.0e8},
+            "stories": [{"story": 1}, {"story": 2}],
+            "sensors": [{"id": "roof_accel", "story": 2, "quantity": "accel"}],
+            "damping": {"type": "rayleigh", "zeta": 0.02, "modes": [1, 2]},
+            "ground_motion": {
+                "dt": 0.01,
+                "duration": 0.2,
+                "synthetic": {"amplitude_x": 0.1, "amplitude_y": 0.0, "frequency_x": 1.0},
+            },
+        }
+    )
+
+    result = run_direct_shear_result(config)
+    ground_x = result.ground.acceleration[:, 0]
+    rows = result.sensors.rows
+
+    assert result.absolute is not None
+    assert result.ground is not None
+    assert result.modal is not None
+    assert np.allclose(
+        result.absolute.acceleration,
+        result.relative.acceleration + ground_x[:, None],
+    )
+    assert np.isclose(rows[-1]["value"], rows[-1]["abs_a"])
+    assert np.isclose(rows[-1]["relative_value"], rows[-1]["a"])
+
+
+def test_shear_golden_regression_signature() -> None:
+    _assert_signature_matches(
+        run_analysis(_golden_shear_raw(), backend="direct"),
+        "shear_3story.json",
+    )
+
+
 def test_direct_backend_unified_entry_routes_shear_path(tmp_path: Path) -> None:
     case_path = tmp_path / "shear.json"
     case_path.write_text(
@@ -402,6 +606,24 @@ def test_cli_validate_can_compare_direct_backend_to_itself(tmp_path: Path, capsy
     assert exit_code == 0
     assert "displacement_max_abs: 0.000000e+00" in output
     assert metrics.read_text(encoding="utf-8") == output
+
+
+def test_cli_validate_supports_separate_abs_and_relative_tolerances(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli_main([
+        "validate",
+        "shear1d/configs/shear_16story_external_gm.json",
+        "--backend-a",
+        "direct",
+        "--backend-b",
+        "direct",
+        "--abs-tol",
+        "0.0",
+        "--rel-tol",
+        "0.0",
+    ])
+
+    assert exit_code == 0
+    assert "relative_l2" in capsys.readouterr().out
 
 
 def test_shear_config_rejects_duplicate_stories_and_nonpositive_values() -> None:
@@ -499,6 +721,12 @@ def test_build_datasets_script_reexports_library_entry_points() -> None:
 
 def test_export_datasets_script_reexports_library_entry_points() -> None:
     assert legacy_export_datasets.export_dataset is export_dataset
+
+
+def test_thin_scripts_reexport_library_entry_points() -> None:
+    assert legacy_metadata.build_qrest_metadata is build_qrest_metadata
+    assert legacy_algorithm_configs.write_algorithm_configs is write_algorithm_configs
+    assert legacy_map_sensors.map_sensors is map_sensors
 
 
 def test_cli_generate_datasets_runs_selected_case(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -758,20 +986,7 @@ def test_sensor_node_validation_accepts_rigid_mapping_result() -> None:
             "synthetic": {"amplitude_x": 0.1, "amplitude_y": 0.05},
         },
     }
-    config = normalize_config(raw)
-    result = run(config)
-    result["sensor_displacement"] = tuple(
-        map_floor_motion(result["displacement"][:, sensor.story - 1, :], sensor.x, sensor.y)
-        for sensor in config.sensors
-    )
-    result["sensor_velocity"] = tuple(
-        map_floor_motion(result["velocity"][:, sensor.story - 1, :], sensor.x, sensor.y)
-        for sensor in config.sensors
-    )
-    result["sensor_acceleration"] = tuple(
-        map_floor_motion(result["acceleration"][:, sensor.story - 1, :], sensor.x, sensor.y)
-        for sensor in config.sensors
-    )
+    result = run_analysis(raw, backend="direct")
 
     metrics = validate_opensees_sensor_nodes(raw, result)
 
@@ -896,11 +1111,9 @@ def test_export_dataset_matches_metadata_channel_order(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.opensees
 def test_opensees_matches_direct_for_simple_damped_no_torsion_case(tmp_path: Path) -> None:
-    if os.environ.get("QREST_RUN_OPENSEES_TESTS") != "1":
-        pytest.skip("Set QREST_RUN_OPENSEES_TESTS=1 to run OpenSeesPy validation.")
-
-    from qrest_model.backends.opensees_story import run as run_opensees
+    _require_opensees_tests()
 
     raw = _base_raw(num_stories=1)
     ax_path = tmp_path / "nonzero_initial_ax.txt"
@@ -912,9 +1125,70 @@ def test_opensees_matches_direct_for_simple_damped_no_torsion_case(tmp_path: Pat
         "duration": 0.2,
         "ax_file": str(ax_path),
     }
-    config = normalize_config(raw)
-    direct = run(config)
-    opensees = run_opensees(config)
+    direct = run_analysis(raw, backend="direct")
+    opensees = run_analysis(raw, backend="opensees")
 
-    for key in ("displacement", "velocity", "acceleration", "absolute_acceleration"):
-        assert np.max(np.abs(direct[key] - opensees[key])) < 1.0e-12
+    _assert_response_close(direct, opensees, displacement_atol=1.0e-10, velocity_atol=1.0e-9, acceleration_atol=1.0e-8)
+
+
+@pytest.mark.opensees
+def test_opensees_matches_direct_for_multistory_symmetric_case() -> None:
+    _require_opensees_tests()
+    raw = _base_raw(num_stories=3)
+    raw["sensors"] = []
+    raw["ground_motion"] = {
+        "dt": 0.01,
+        "duration": 0.2,
+        "synthetic": {"amplitude_x": 0.08, "amplitude_y": 0.03, "frequency_x": 0.9, "frequency_y": 1.1},
+    }
+
+    _assert_response_close(run_analysis(raw, backend="direct"), run_analysis(raw, backend="opensees"))
+
+
+@pytest.mark.opensees
+def test_opensees_matches_direct_for_eccentric_sensor_case() -> None:
+    _require_opensees_tests()
+    raw = _base_raw(num_stories=2)
+    raw["floor_defaults"]["mass_center"] = [0.2, 0.3]
+    raw["sensors"] = [
+        {"id": "roof_x_ypos", "story": 2, "x": 5.0, "y": 3.0, "direction": "X"},
+        {"id": "roof_y_xpos", "story": 2, "x": 5.0, "y": 0.0, "direction": "Y"},
+        {"id": "roof_rz", "story": 2, "x": 0.0, "y": 0.0, "direction": "RZ"},
+    ]
+    raw["ground_motion"] = {
+        "dt": 0.01,
+        "duration": 0.2,
+        "synthetic": {"amplitude_x": 0.1, "amplitude_y": 0.05, "frequency_x": 1.0, "frequency_y": 0.7},
+    }
+    direct = run_analysis(raw, backend="direct")
+    opensees = run_analysis(raw, backend="opensees")
+
+    _assert_response_close(direct, opensees)
+    assert np.allclose(
+        [row["value"] for row in direct.sensors.rows],
+        [row["value"] for row in opensees.sensors.rows],
+        atol=1.0e-6,
+        rtol=1.0e-7,
+    )
+
+
+@pytest.mark.opensees
+def test_opensees_matches_direct_for_variable_story_stiffness_case() -> None:
+    _require_opensees_tests()
+    raw = _base_raw(num_stories=3)
+    raw["stories"] = [
+        {"story": 1, "elements": _scaled_corner_elements(1.0)},
+        {"story": 2, "elements": _scaled_corner_elements(0.9)},
+        {"story": 3, "elements": _scaled_corner_elements(0.75)},
+    ]
+    raw["sensors"] = []
+
+    _assert_response_close(run_analysis(raw, backend="direct"), run_analysis(raw, backend="opensees"))
+
+
+@pytest.mark.opensees
+def test_opensees_shear_matches_direct_for_three_story_case() -> None:
+    _require_opensees_tests()
+    raw = _golden_shear_raw()
+
+    _assert_response_close(run_analysis(raw, backend="direct"), run_analysis(raw, backend="opensees"))

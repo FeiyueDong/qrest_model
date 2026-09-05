@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from qrest_model.analysis.modal import modal_analysis
 from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory, SensorResult
 from qrest_model.schema import ElementConfig, ModelConfig, StoryConfig, load_config
 from qrest_model.common.damping import rayleigh_coefficients
@@ -24,7 +25,7 @@ def run(config: ModelConfig | str | Path, output_dir: str | Path | None = None) 
     legacy = result.to_legacy_dict()
     legacy["stiffness_matrix_theory"] = legacy["stiffness_matrix"]
     if output_dir is not None:
-        write_outputs(legacy, output_dir)
+        write_outputs(result, output_dir)
     return legacy
 
 
@@ -84,6 +85,7 @@ def run_result(config: ModelConfig | str | Path) -> AnalysisResult:
         mass_matrix=mass_matrix,
         stiffness_matrix=stiffness_matrix,
         damping_matrix=alpha * mass_matrix + beta * stiffness_matrix,
+        modal=modal_analysis(mass_matrix, stiffness_matrix),
         metadata=AnalysisMetadata(
             backend="opensees_story",
             response_definition=(
@@ -314,5 +316,7 @@ def _element_key(index: int, element: ElementConfig, use_element_ids: bool) -> s
     return str(index)
 
 
-def write_outputs(result: dict[str, Any], output_dir: str | Path) -> None:
-    write_story3d_outputs(result, output_dir, stiffness_key="stiffness_matrix_theory")
+def write_outputs(result: AnalysisResult | dict[str, Any], output_dir: str | Path) -> None:
+    legacy = result.to_legacy_dict() if isinstance(result, AnalysisResult) else dict(result)
+    legacy["stiffness_matrix_theory"] = legacy["stiffness_matrix"]
+    write_story3d_outputs(legacy, output_dir, stiffness_key="stiffness_matrix_theory")

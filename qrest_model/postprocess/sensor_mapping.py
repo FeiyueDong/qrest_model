@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from qrest_model.analysis.result import SensorResult
 from qrest_model.schema import SensorConfig
 
 
@@ -26,6 +27,28 @@ def build_sensor_rows(
     absolute_velocity: np.ndarray | None = None,
     absolute_acceleration: np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
+    return build_sensor_result(
+        sensors,
+        time,
+        displacement,
+        velocity,
+        acceleration,
+        absolute_displacement,
+        absolute_velocity,
+        absolute_acceleration,
+    ).rows
+
+
+def build_sensor_result(
+    sensors: tuple[SensorConfig, ...],
+    time: np.ndarray,
+    displacement: np.ndarray,
+    velocity: np.ndarray,
+    acceleration: np.ndarray,
+    absolute_displacement: np.ndarray | None = None,
+    absolute_velocity: np.ndarray | None = None,
+    absolute_acceleration: np.ndarray | None = None,
+) -> SensorResult:
     mapped_displacement = []
     mapped_velocity = []
     mapped_acceleration = []
@@ -49,7 +72,7 @@ def build_sensor_rows(
             mapped_absolute_acceleration.append(
                 map_floor_motion(absolute_acceleration[:, story_index, :], sensor.x, sensor.y)
             )
-    return build_sensor_rows_from_motion(
+    rows = build_sensor_rows_from_motion(
         sensors,
         time,
         tuple(mapped_displacement),
@@ -58,6 +81,15 @@ def build_sensor_rows(
         tuple(mapped_absolute_displacement) if mapped_absolute_displacement else None,
         tuple(mapped_absolute_velocity) if mapped_absolute_velocity else None,
         tuple(mapped_absolute_acceleration) if mapped_absolute_acceleration else None,
+    )
+    return SensorResult(
+        rows=rows,
+        displacement=tuple(mapped_displacement),
+        velocity=tuple(mapped_velocity),
+        acceleration=tuple(mapped_acceleration),
+        absolute_displacement=tuple(mapped_absolute_displacement) if mapped_absolute_displacement else None,
+        absolute_velocity=tuple(mapped_absolute_velocity) if mapped_absolute_velocity else None,
+        absolute_acceleration=tuple(mapped_absolute_acceleration) if mapped_absolute_acceleration else None,
     )
 
 
@@ -126,4 +158,3 @@ def _optional_motion(motions: tuple[np.ndarray, ...] | None, index: int, fallbac
     if motions is None:
         return fallback
     return motions[index]
-

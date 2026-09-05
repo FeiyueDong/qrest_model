@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from qrest_model.analysis.linear_system import LinearSystem
+from qrest_model.analysis.validation import validate_positive_definite_matrix
 from qrest_model.schema import ShearModelConfig, ShearStoryConfig
 from qrest_model.theory.shear_stiffness import assemble_shear_mass, assemble_shear_stiffness
 
@@ -25,10 +26,16 @@ class ShearBuildingModel:
         return len(self.stories)
 
     def mass_matrix(self) -> np.ndarray:
-        return assemble_shear_mass(self.stories)
+        return validate_positive_definite_matrix(
+            assemble_shear_mass(self.stories),
+            label="Shear-building global mass matrix",
+        )
 
     def stiffness_matrix(self) -> np.ndarray:
-        return assemble_shear_stiffness(self.stories)
+        return validate_positive_definite_matrix(
+            assemble_shear_stiffness(self.stories),
+            label="Shear-building global stiffness matrix",
+        )
 
     def influence_matrix(self) -> np.ndarray:
         return np.ones(self.num_stories, dtype=float)

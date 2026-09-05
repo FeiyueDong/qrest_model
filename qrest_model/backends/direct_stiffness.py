@@ -10,13 +10,13 @@ import numpy as np
 from qrest_model.analysis.linear_system import LinearSystem
 from qrest_model.analysis.newmark import NewmarkSolver
 from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory, SensorResult
+from qrest_model.backends.direct_linear import run_linear_direct
 from qrest_model.schema import ModelConfig, load_config
-from qrest_model.common.damping import rayleigh_coefficients, rayleigh_matrix
 from qrest_model.common.ground_motion import load_ground_motion
 from qrest_model.common.response import add_absolute_floor_response
 from qrest_model.exporters.backend_outputs import write_story3d_outputs
 from qrest_model.models.rigid_floor import RigidFloorBuildingModel
-from qrest_model.postprocess.sensor_mapping import build_sensor_rows
+from qrest_model.postprocess.sensor_mapping import build_sensor_result
 from qrest_model.theory.story_stiffness import (
     story_stiffness_table,
 )
@@ -24,10 +24,9 @@ from qrest_model.theory.story_stiffness import (
 
 def run(config: ModelConfig | str | Path, output_dir: str | Path | None = None) -> dict[str, Any]:
     result = run_result(config)
-    legacy = result.to_legacy_dict()
     if output_dir is not None:
-        write_outputs(legacy, output_dir)
-    return legacy
+        write_outputs(result, output_dir)
+    return result.to_legacy_dict()
 
 
 def run_result(config: ModelConfig | str | Path) -> AnalysisResult:
@@ -41,22 +40,21 @@ def run_result(config: ModelConfig | str | Path) -> AnalysisResult:
 
     ground = load_ground_motion(model_config.ground_motion, base_dir)
     structural_model = RigidFloorBuildingModel.from_config(model_config)
-    mass = structural_model.mass_matrix()
-    stiffness = structural_model.stiffness_matrix()
-    damping = rayleigh_matrix(mass, stiffness, model_config.damping)
-    alpha, beta = rayleigh_coefficients(mass, stiffness, model_config.damping)
-
-    response = solve_newmark(
-        mass=mass,
-        damping=damping,
-        stiffness=stiffness,
-        time=ground["time"],
-        ground_ax=ground["ax"],
-        ground_ay=ground["ay"],
-        num_stories=model_config.num_stories,
+    linear = run_linear_direct(
+        structural_model,
+        model_config.damping,
+        ground["time"],
+        np.column_stack([ground["ax"], ground["ay"]]),
     )
+    n_steps = linear.time.size
+    response = {
+        "time": linear.time,
+        "displacement": linear.displacement.reshape((n_steps, model_config.num_stories, 3)),
+        "velocity": linear.velocity.reshape((n_steps, model_config.num_stories, 3)),
+        "acceleration": linear.acceleration.reshape((n_steps, model_config.num_stories, 3)),
+    }
     add_absolute_floor_response(response, ground["ax"], ground["ay"])
-    sensor_rows = build_sensor_rows(
+    sensor = build_sensor_result(
         model_config.sensors,
         response["time"],
         response["displacement"],
@@ -83,18 +81,19 @@ def run_result(config: ModelConfig | str | Path) -> AnalysisResult:
             velocity=response["ground_velocity"],
             acceleration=response["ground_acceleration"],
         ),
-        sensors=SensorResult(rows=sensor_rows),
-        mass_matrix=mass,
-        stiffness_matrix=stiffness,
-        damping_matrix=damping,
+        sensors=sensor,
+        mass_matrix=linear.mass_matrix,
+        stiffness_matrix=linear.stiffness_matrix,
+        damping_matrix=linear.damping_matrix,
+        modal=linear.modal,
         metadata=AnalysisMetadata(
             backend="direct_stiffness",
             response_definition=(
                 "ux/uy/rz, vx/vy/vrz, ax/ay/arz are relative response; "
                 "abs_* columns include ground translation from integrated input acceleration"
             ),
-            rayleigh_alpha=alpha,
-            rayleigh_beta=beta,
+            rayleigh_alpha=linear.rayleigh_alpha,
+            rayleigh_beta=linear.rayleigh_beta,
             extras={
                 "ground_displacement_source": response["ground_displacement_source"],
                 "ground_velocity_source": response["ground_velocity_source"],
@@ -139,5 +138,5 @@ def solve_newmark(
     return shaped
 
 
-def write_outputs(result: dict[str, Any], output_dir: str | Path) -> None:
+def write_outputs(result: AnalysisResult | dict[str, Any], output_dir: str | Path) -> None:
     write_story3d_outputs(result, output_dir)

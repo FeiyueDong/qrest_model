@@ -7,17 +7,17 @@ import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
-from qrest_model.backends.direct_shear import run as run_direct_shear
-from qrest_model.backends.direct_stiffness import run as run_direct_stiffness
+from qrest_model.analysis.result import AnalysisResult
+from qrest_model.backends import run_analysis
 from qrest_model.common.io import ensure_output_dir
 from qrest_model.datasets.cases import DATASET_CONFIG_ROOT, DatasetCase, dataset_cases
+from qrest_model.exporters.algorithm_config import write_algorithm_configs
 from qrest_model.exporters.structural_properties import write_structural_properties
 from qrest_model.exporters.time_history import (
     write_shear_master_time_history,
     write_story3d_master_time_history,
 )
-from scripts.make_algorithm_configs import write_algorithm_configs
-from scripts.map_sensors import map_sensors
+from qrest_model.postprocess.master_mapping import map_sensors
 
 
 def generate_all(
@@ -55,14 +55,11 @@ def generate_official_case(case: DatasetCase, case_dir: str | Path) -> Path:
         encoding="utf-8",
     )
 
-    if case.model_type == "shear1d":
-        result = run_direct_shear(config_path)
-    else:
-        result = run_direct_stiffness(config_path)
+    result = run_analysis(config_path, backend="direct")
 
     master_dir = ensure_output_dir(case_dir / "master_time_history")
     if case.model_type == "shear1d":
-        write_shear_master_time_history(master_dir, result, case.config)
+        write_shear_master_time_history(master_dir, result)
     else:
         write_story3d_master_time_history(master_dir, result)
     write_structural_properties(case, case_dir / "structural_properties", result)
@@ -93,13 +90,13 @@ def reset_output_dir(path: str | Path) -> Path:
     return output
 
 
-def build_dataset_info(case: DatasetCase, result: dict[str, Any]) -> dict[str, Any]:
+def build_dataset_info(case: DatasetCase, result: AnalysisResult) -> dict[str, Any]:
     return {
         "name": case.name,
         "data_type": case.data_type,
         "model_type": case.model_type,
         "description": case.description,
-        "time_steps": int(result["time"].size),
+        "time_steps": int(result.time.size),
         "master_time_history": {
             "directory": "master_time_history",
             "format": "CSV; first column is time, each remaining column is one master mass-point component.",

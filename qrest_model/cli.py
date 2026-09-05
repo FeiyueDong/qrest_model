@@ -39,7 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--backend-a", default="direct", choices=("direct", "opensees"))
     validate_parser.add_argument("--backend-b", default="opensees", choices=("direct", "opensees"))
     validate_parser.add_argument("--output", default=None, help="Optional metrics text output path.")
-    validate_parser.add_argument("--tolerance", type=float, default=None, help="Fail if any metric exceeds this value.")
+    validate_parser.add_argument("--abs-tol", type=float, default=None, help="Fail if any *_max_abs metric exceeds this value.")
+    validate_parser.add_argument("--rel-tol", type=float, default=None, help="Fail if any *_relative_l2 metric exceeds this value.")
+    validate_parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=None,
+        help="Legacy shortcut applied to both --abs-tol and --rel-tol when they are not set.",
+    )
     validate_parser.set_defaults(func=_validate_command)
 
     generate_parser = subparsers.add_parser("generate-datasets", help="Generate configured qREST model datasets.")
@@ -59,23 +66,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _run_command(args: argparse.Namespace) -> int:
     result = run_analysis(args.case, backend=args.backend)
-    legacy = result.to_legacy_dict()
     output = Path(args.output) if args.output else _default_run_output(args.case, args.backend)
     if _case_model_type(args.case) == SHEAR_BUILDING_1D:
-        write_shear_outputs(legacy, output)
+        write_shear_outputs(result, output)
     else:
-        if result.metadata.backend == "opensees_story":
-            legacy["stiffness_matrix_theory"] = legacy["stiffness_matrix"]
-            write_story3d_outputs(legacy, output, stiffness_key="stiffness_matrix_theory")
-        else:
-            write_story3d_outputs(legacy, output)
+        stiffness_key = "stiffness_matrix_theory" if result.metadata.backend == "opensees_story" else "stiffness_matrix"
+        write_story3d_outputs(result, output, stiffness_key=stiffness_key)
     print(output)
     return 0
 
 
 def _validate_command(args: argparse.Namespace) -> int:
-    a = run_analysis(args.case, backend=args.backend_a).to_legacy_dict()
-    b = run_analysis(args.case, backend=args.backend_b).to_legacy_dict()
+    a = run_analysis(args.case, backend=args.backend_a)
+    b = run_analysis(args.case, backend=args.backend_b)
     metrics = compare_master_arrays(a, b)
     text = _format_metrics(metrics)
     print(text)
@@ -83,7 +86,9 @@ def _validate_command(args: argparse.Namespace) -> int:
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(text + "\n", encoding="utf-8")
-    if args.tolerance is not None and any(value > args.tolerance for value in metrics.values()):
+    abs_tol = args.abs_tol if args.abs_tol is not None else args.tolerance
+    rel_tol = args.rel_tol if args.rel_tol is not None else args.tolerance
+    if _metrics_exceed_tolerance(metrics, abs_tol=abs_tol, rel_tol=rel_tol):
         return 1
     return 0
 
@@ -125,6 +130,20 @@ def _case_model_type(case: str | Path) -> str:
 
 def _format_metrics(metrics: dict[str, float]) -> str:
     return "\n".join(f"{key}: {value:.6e}" for key, value in metrics.items())
+
+
+def _metrics_exceed_tolerance(
+    metrics: dict[str, float],
+    *,
+    abs_tol: float | None,
+    rel_tol: float | None,
+) -> bool:
+    for key, value in metrics.items():
+        if key.endswith("_max_abs") and abs_tol is not None and value > abs_tol:
+            return True
+        if key.endswith("_relative_l2") and rel_tol is not None and value > rel_tol:
+            return True
+    return False
 
 
 if __name__ == "__main__":

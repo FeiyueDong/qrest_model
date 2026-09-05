@@ -7,8 +7,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from qrest_model.analysis.linear_system import LinearSystem
+from qrest_model.analysis.validation import validate_positive_definite_matrix
 from qrest_model.schema import ModelConfig, StoryConfig
-from qrest_model.theory.story_stiffness import assemble_global_stiffness, assemble_mass
+from qrest_model.theory.story_stiffness import assemble_global_stiffness, assemble_mass, story_stiffness
 
 
 @dataclass(frozen=True)
@@ -24,10 +25,21 @@ class RigidFloorBuildingModel:
         return len(self.stories)
 
     def mass_matrix(self) -> np.ndarray:
-        return assemble_mass(self.stories)
+        return validate_positive_definite_matrix(
+            assemble_mass(self.stories),
+            label="Rigid-floor global mass matrix",
+        )
 
     def stiffness_matrix(self) -> np.ndarray:
-        return assemble_global_stiffness(self.stories)
+        for story in self.stories:
+            validate_positive_definite_matrix(
+                story_stiffness(story),
+                label=f"Story {story.story} stiffness matrix",
+            )
+        return validate_positive_definite_matrix(
+            assemble_global_stiffness(self.stories),
+            label="Rigid-floor global stiffness matrix",
+        )
 
     def influence_matrix(self) -> np.ndarray:
         ux = np.tile(np.array([1.0, 0.0, 0.0]), self.num_stories)
@@ -41,4 +53,3 @@ class RigidFloorBuildingModel:
             stiffness=self.stiffness_matrix(),
             influence=self.influence_matrix(),
         )
-

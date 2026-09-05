@@ -8,20 +8,22 @@ from typing import Any
 
 import numpy as np
 
+from qrest_model.analysis.result import AnalysisResult
 from qrest_model.schema import GroundMotionConfig
 from qrest_model.common.ground_motion import load_ground_motion
-from qrest_model.common.response import ground_kinematics
 
 
-def write_story3d_master_time_history(output_dir: Path, result: dict[str, Any]) -> None:
+def write_story3d_master_time_history(output_dir: Path, result: AnalysisResult | dict[str, Any]) -> None:
+    time = _result_time(result)
+    absolute = _absolute_response(result)
     for filename, key, components in (
-        ("acceleration.csv", "absolute_acceleration", ("x", "y", "rz")),
-        ("velocity.csv", "absolute_velocity", ("x", "y", "rz")),
-        ("displacement.csv", "absolute_displacement", ("x", "y", "rz")),
+        ("acceleration.csv", "acceleration", ("x", "y", "rz")),
+        ("velocity.csv", "velocity", ("x", "y", "rz")),
+        ("displacement.csv", "displacement", ("x", "y", "rz")),
     ):
         rows = []
-        values = result[key]
-        for step, t in enumerate(result["time"]):
+        values = getattr(absolute, key)
+        for step, t in enumerate(time):
             row: dict[str, Any] = {"time": float(t)}
             for story_index in range(values.shape[1]):
                 for component_index, component in enumerate(components):
@@ -30,20 +32,23 @@ def write_story3d_master_time_history(output_dir: Path, result: dict[str, Any]) 
         write_csv(output_dir / filename, rows)
 
 
-def write_shear_master_time_history(output_dir: Path, result: dict[str, Any], config: dict[str, Any]) -> None:
-    direction = str(config.get("model", {}).get("dof_per_floor", ["Ux"])[0])[-1].upper()
+def write_shear_master_time_history(
+    output_dir: Path,
+    result: AnalysisResult | dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> None:
+    time = _result_time(result)
+    absolute = _absolute_response(result)
+    direction = _shear_direction(result, config)
     direction_key = direction.lower()
-    ground_motion = load_ground_motion_from_raw(config.get("ground_motion", {}))
-    ground = ground_kinematics(result["time"], ground_motion["ax"], ground_motion["ay"])
-    ground_index = 0 if direction == "X" else 1
     histories = (
-        ("acceleration.csv", result["acceleration"] + ground["acceleration"][:, ground_index, None]),
-        ("velocity.csv", result["velocity"] + ground["velocity"][:, ground_index, None]),
-        ("displacement.csv", result["displacement"] + ground["displacement"][:, ground_index, None]),
+        ("acceleration.csv", absolute.acceleration),
+        ("velocity.csv", absolute.velocity),
+        ("displacement.csv", absolute.displacement),
     )
     for filename, values in histories:
         rows = []
-        for step, t in enumerate(result["time"]):
+        for step, t in enumerate(time):
             row: dict[str, Any] = {"time": float(t)}
             for story_index in range(values.shape[1]):
                 row[f"story_{story_index + 1:02d}_{direction_key}"] = values[step, story_index]
@@ -65,6 +70,42 @@ def load_ground_motion_from_raw(raw: dict[str, Any]) -> dict[str, np.ndarray]:
     )
 
 
+def _result_time(result: AnalysisResult | dict[str, Any]) -> np.ndarray:
+    if isinstance(result, AnalysisResult):
+        return result.time
+    return np.asarray(result["time"], dtype=float)
+
+
+def _absolute_response(result: AnalysisResult | dict[str, Any]) -> Any:
+    if isinstance(result, AnalysisResult):
+        if result.absolute is None:
+            raise ValueError("AnalysisResult.absolute is required for time-history export.")
+        return result.absolute
+    return _LegacyResponse(
+        displacement=np.asarray(result["absolute_displacement"], dtype=float),
+        velocity=np.asarray(result["absolute_velocity"], dtype=float),
+        acceleration=np.asarray(result["absolute_acceleration"], dtype=float),
+    )
+
+
+def _shear_direction(result: AnalysisResult | dict[str, Any], config: dict[str, Any] | None) -> str:
+    if isinstance(result, AnalysisResult):
+        direction = result.metadata.extras.get("direction")
+        if direction is not None:
+            return str(direction).upper()
+    if config is not None:
+        return str(config.get("model", {}).get("dof_per_floor", ["Ux"])[0])[-1].upper()
+    metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
+    return str(metadata.get("direction", "X")).upper()
+
+
+class _LegacyResponse:
+    def __init__(self, displacement: np.ndarray, velocity: np.ndarray, acceleration: np.ndarray) -> None:
+        self.displacement = displacement
+        self.velocity = velocity
+        self.acceleration = acceleration
+
+
 def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         Path(path).write_text("", encoding="utf-8")
@@ -73,4 +114,3 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-

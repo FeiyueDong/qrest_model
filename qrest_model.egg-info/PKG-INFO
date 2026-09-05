@@ -1,3 +1,18 @@
+Metadata-Version: 2.4
+Name: qrest-model
+Version: 0.1.0
+Summary: Controllable structural dynamics models for qREST test data generation.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: scipy
+Provides-Extra: opensees
+Requires-Dist: openseespy; extra == "opensees"
+Provides-Extra: yaml
+Requires-Dist: PyYAML; extra == "yaml"
+Provides-Extra: test
+Requires-Dist: pytest; extra == "test"
+
 # qREST 可控结构动力模型
 
 本目录提供一个用于生成 qREST 测试数据的可控数值模型。它的目标不是替代精细有限元分析，而是生成结构、质量、刚度、阻尼、输入地震动和测点位置都明确可控的响应数据，方便算法单元测试、回归测试和异常结果排查。

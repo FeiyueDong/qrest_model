@@ -4,30 +4,33 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from qrest_model.analysis.result import AnalysisResult
 from qrest_model.analysis.modal import modal_analysis
 from qrest_model.common.io import ensure_output_dir
-from qrest_model.datasets.cases import DatasetCase
 from qrest_model.exporters.time_history import write_csv
 
+if TYPE_CHECKING:
+    from qrest_model.datasets.cases import DatasetCase
 
-def write_structural_properties(case: DatasetCase, output_dir: str | Path, result: dict[str, Any]) -> None:
+
+def write_structural_properties(case: "DatasetCase", output_dir: str | Path, result: AnalysisResult | dict[str, Any]) -> None:
     output = ensure_output_dir(output_dir)
-    mass = np.asarray(result["mass_matrix"], dtype=float)
-    stiffness = np.asarray(result["stiffness_matrix"], dtype=float)
-    damping = np.asarray(result["damping_matrix"], dtype=float)
+    mass = _mass_matrix(result)
+    stiffness = _stiffness_matrix(result)
+    damping = _damping_matrix(result)
     dof_labels = dof_labels_for_case(case)
-    modal = modal_properties(mass, stiffness)
+    modal = modal_properties(result)
 
     write_matrix_csv(output / "mass_matrix.csv", mass, dof_labels, dof_labels)
     write_matrix_csv(output / "stiffness_matrix.csv", stiffness, dof_labels, dof_labels)
     write_matrix_csv(output / "damping_matrix.csv", damping, dof_labels, dof_labels)
     write_modal_frequencies(output / "modal_frequencies.csv", modal["omega"])
     write_mode_shapes(output / "mode_shapes.csv", dof_labels, modal["mass_normalized_modes"])
-    write_csv(output / "story_stiffness.csv", result["story_stiffness_rows"])
+    write_csv(output / "story_stiffness.csv", _story_stiffness_rows(result))
 
     summary = {
         "case": case.name,
@@ -36,8 +39,8 @@ def write_structural_properties(case: DatasetCase, output_dir: str | Path, resul
         "mode_count": int(modal["omega"].size),
         "fundamental_frequency_hz": float(modal["omega"][0] / (2.0 * np.pi)) if modal["omega"].size else None,
         "fundamental_period_s": float(2.0 * np.pi / modal["omega"][0]) if modal["omega"].size else None,
-        "rayleigh_alpha": result.get("metadata", {}).get("rayleigh_alpha"),
-        "rayleigh_beta": result.get("metadata", {}).get("rayleigh_beta"),
+        "rayleigh_alpha": _metadata_value(result, "rayleigh_alpha"),
+        "rayleigh_beta": _metadata_value(result, "rayleigh_beta"),
         "matrix_files_are_labelled": True,
         "mode_shape_normalization": "mass-normalized; each mode satisfies phi.T @ M @ phi = 1",
     }
@@ -47,7 +50,7 @@ def write_structural_properties(case: DatasetCase, output_dir: str | Path, resul
     )
 
 
-def dof_labels_for_case(case: DatasetCase) -> list[str]:
+def dof_labels_for_case(case: "DatasetCase") -> list[str]:
     if case.model_type == "shear1d":
         direction = str(case.config.get("model", {}).get("dof_per_floor", ["Ux"])[0])[-1].lower()
         return [
@@ -61,9 +64,48 @@ def dof_labels_for_case(case: DatasetCase) -> list[str]:
     ]
 
 
-def modal_properties(mass: np.ndarray, stiffness: np.ndarray) -> dict[str, np.ndarray]:
-    modal = modal_analysis(mass, stiffness)
+def modal_properties(result: AnalysisResult | dict[str, Any] | np.ndarray, stiffness: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    if isinstance(result, AnalysisResult):
+        if result.modal is None:
+            raise ValueError("AnalysisResult.modal is required for structural property export.")
+        modal = result.modal
+    elif stiffness is None:
+        mass = np.asarray(result["mass_matrix"], dtype=float)
+        stiffness = np.asarray(result["stiffness_matrix"], dtype=float)
+        modal = modal_analysis(mass, stiffness)
+    else:
+        modal = modal_analysis(np.asarray(result, dtype=float), stiffness)
     return {"omega": modal.omega, "mass_normalized_modes": modal.mode_shapes}
+
+
+def _mass_matrix(result: AnalysisResult | dict[str, Any]) -> np.ndarray:
+    if isinstance(result, AnalysisResult):
+        return result.mass_matrix
+    return np.asarray(result["mass_matrix"], dtype=float)
+
+
+def _stiffness_matrix(result: AnalysisResult | dict[str, Any]) -> np.ndarray:
+    if isinstance(result, AnalysisResult):
+        return result.stiffness_matrix
+    return np.asarray(result["stiffness_matrix"], dtype=float)
+
+
+def _damping_matrix(result: AnalysisResult | dict[str, Any]) -> np.ndarray:
+    if isinstance(result, AnalysisResult):
+        return result.damping_matrix
+    return np.asarray(result["damping_matrix"], dtype=float)
+
+
+def _story_stiffness_rows(result: AnalysisResult | dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(result, AnalysisResult):
+        return result.story_stiffness_rows
+    return result["story_stiffness_rows"]
+
+
+def _metadata_value(result: AnalysisResult | dict[str, Any], key: str) -> Any:
+    if isinstance(result, AnalysisResult):
+        return getattr(result.metadata, key)
+    return result.get("metadata", {}).get(key)
 
 
 def write_matrix_csv(path: str | Path, matrix: np.ndarray, row_labels: list[str], col_labels: list[str]) -> None:

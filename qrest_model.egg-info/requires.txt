@@ -1,0 +1,11 @@
+numpy
+scipy
+
+[opensees]
+openseespy
+
+[test]
+pytest
+
+[yaml]
+PyYAML

@@ -7,13 +7,14 @@ from typing import Any
 
 import numpy as np
 
+from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory, SensorResult
+from qrest_model.backends.direct_linear import run_linear_direct
 from qrest_model.analysis.linear_system import LinearSystem
 from qrest_model.analysis.newmark import NewmarkSolver
-from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory, SensorResult
-from qrest_model.common.damping import rayleigh_coefficients, rayleigh_matrix
 from qrest_model.common.ground_motion import load_ground_motion
+from qrest_model.common.response import add_absolute_shear_response
 from qrest_model.schema import ShearModelConfig, load_shear_config
-from qrest_model.exporters.backend_outputs import write_shear_master_csv, write_shear_outputs
+from qrest_model.exporters.backend_outputs import write_shear_outputs
 from qrest_model.models.shear_building import ShearBuildingModel
 from qrest_model.theory.shear_stiffness import (
     shear_story_stiffness_table,
@@ -22,10 +23,9 @@ from qrest_model.theory.shear_stiffness import (
 
 def run(config: ShearModelConfig | str | Path, output_dir: str | Path | None = None) -> dict[str, Any]:
     result = run_result(config)
-    legacy = result.to_legacy_dict()
     if output_dir is not None:
-        write_outputs(legacy, output_dir)
-    return legacy
+        write_outputs(result, output_dir)
+    return result.to_legacy_dict()
 
 
 def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
@@ -40,18 +40,20 @@ def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
     ground = load_ground_motion(model_config.ground_motion, base_dir)
     ground_accel = ground["ax"] if model_config.direction == "X" else ground["ay"]
     structural_model = ShearBuildingModel.from_config(model_config)
-    mass = structural_model.mass_matrix()
-    stiffness = structural_model.stiffness_matrix()
-    damping = rayleigh_matrix(mass, stiffness, model_config.damping)
-    alpha, beta = rayleigh_coefficients(mass, stiffness, model_config.damping)
-
-    response = solve_newmark(
-        mass=mass,
-        damping=damping,
-        stiffness=stiffness,
-        time=ground["time"],
-        ground_accel=ground_accel,
+    linear = run_linear_direct(
+        structural_model,
+        model_config.damping,
+        ground["time"],
+        ground_accel,
     )
+    response = {
+        "time": linear.time,
+        "displacement": linear.displacement,
+        "velocity": linear.velocity,
+        "acceleration": linear.acceleration,
+    }
+    add_absolute_shear_response(response, ground["ax"], ground["ay"], model_config.direction)
+    sensor = build_sensor_result(model_config, response)
     return AnalysisResult(
         time=response["time"],
         relative=ResponseHistory(
@@ -59,16 +61,34 @@ def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
             velocity=response["velocity"],
             acceleration=response["acceleration"],
         ),
-        sensors=SensorResult(rows=build_sensor_rows(model_config, response)),
-        mass_matrix=mass,
-        stiffness_matrix=stiffness,
-        damping_matrix=damping,
+        absolute=ResponseHistory(
+            displacement=response["absolute_displacement"],
+            velocity=response["absolute_velocity"],
+            acceleration=response["absolute_acceleration"],
+        ),
+        ground=ResponseHistory(
+            displacement=response["ground_displacement"],
+            velocity=response["ground_velocity"],
+            acceleration=response["ground_acceleration"],
+        ),
+        sensors=sensor,
+        mass_matrix=linear.mass_matrix,
+        stiffness_matrix=linear.stiffness_matrix,
+        damping_matrix=linear.damping_matrix,
+        modal=linear.modal,
         metadata=AnalysisMetadata(
             backend="direct_shear",
-            response_definition="relative one-direction floor response",
-            rayleigh_alpha=alpha,
-            rayleigh_beta=beta,
-            extras={"direction": model_config.direction},
+            response_definition=(
+                "one-direction response; relative is structural response to ground, "
+                "absolute includes the selected ground translation component"
+            ),
+            rayleigh_alpha=linear.rayleigh_alpha,
+            rayleigh_beta=linear.rayleigh_beta,
+            extras={
+                "direction": model_config.direction,
+                "ground_displacement_source": response["ground_displacement_source"],
+                "ground_velocity_source": response["ground_velocity_source"],
+            },
         ),
         story_stiffness_rows=shear_story_stiffness_table(model_config.stories),
     )
@@ -99,6 +119,24 @@ def solve_newmark(
     }
 
 
+def build_sensor_result(config: ShearModelConfig, result: dict[str, np.ndarray]) -> SensorResult:
+    displacement = tuple(result["displacement"][:, sensor.story - 1] for sensor in config.sensors)
+    velocity = tuple(result["velocity"][:, sensor.story - 1] for sensor in config.sensors)
+    acceleration = tuple(result["acceleration"][:, sensor.story - 1] for sensor in config.sensors)
+    absolute_displacement = tuple(result["absolute_displacement"][:, sensor.story - 1] for sensor in config.sensors)
+    absolute_velocity = tuple(result["absolute_velocity"][:, sensor.story - 1] for sensor in config.sensors)
+    absolute_acceleration = tuple(result["absolute_acceleration"][:, sensor.story - 1] for sensor in config.sensors)
+    return SensorResult(
+        rows=build_sensor_rows(config, result),
+        displacement=displacement,
+        velocity=velocity,
+        acceleration=acceleration,
+        absolute_displacement=absolute_displacement,
+        absolute_velocity=absolute_velocity,
+        absolute_acceleration=absolute_acceleration,
+    )
+
+
 def build_sensor_rows(config: ShearModelConfig, result: dict[str, np.ndarray]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for sensor in config.sensors:
@@ -107,6 +145,9 @@ def build_sensor_rows(config: ShearModelConfig, result: dict[str, np.ndarray]) -
             disp = result["displacement"][step, story_index]
             vel = result["velocity"][step, story_index]
             acc = result["acceleration"][step, story_index]
+            abs_disp = result["absolute_displacement"][step, story_index]
+            abs_vel = result["absolute_velocity"][step, story_index]
+            abs_acc = result["absolute_acceleration"][step, story_index]
             rows.append(
                 {
                     "time": t,
@@ -117,7 +158,11 @@ def build_sensor_rows(config: ShearModelConfig, result: dict[str, np.ndarray]) -
                     "u": disp,
                     "v": vel,
                     "a": acc,
-                    "value": _project(sensor.quantity, disp, vel, acc),
+                    "abs_u": abs_disp,
+                    "abs_v": abs_vel,
+                    "abs_a": abs_acc,
+                    "value": _project(sensor.quantity, abs_disp, abs_vel, abs_acc),
+                    "relative_value": _project(sensor.quantity, disp, vel, acc),
                 }
             )
     return rows
@@ -131,5 +176,5 @@ def _project(quantity: str, disp: float, vel: float, acc: float) -> float:
     return float(acc)
 
 
-def write_outputs(result: dict[str, Any], output_dir: str | Path) -> None:
+def write_outputs(result: AnalysisResult | dict[str, Any], output_dir: str | Path) -> None:
     write_shear_outputs(result, output_dir)

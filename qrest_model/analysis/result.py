@@ -22,6 +22,12 @@ class ResponseHistory:
         acceleration = np.asarray(self.acceleration, dtype=float)
         if velocity.shape != displacement.shape or acceleration.shape != displacement.shape:
             raise ValueError("ResponseHistory arrays must have matching shapes.")
+        if not np.all(np.isfinite(displacement)):
+            raise ValueError("ResponseHistory.displacement must be finite.")
+        if not np.all(np.isfinite(velocity)):
+            raise ValueError("ResponseHistory.velocity must be finite.")
+        if not np.all(np.isfinite(acceleration)):
+            raise ValueError("ResponseHistory.acceleration must be finite.")
         object.__setattr__(self, "displacement", displacement)
         object.__setattr__(self, "velocity", velocity)
         object.__setattr__(self, "acceleration", acceleration)
@@ -77,12 +83,37 @@ class AnalysisResult:
         time = np.asarray(self.time, dtype=float)
         if time.ndim != 1:
             raise ValueError("AnalysisResult.time must be one-dimensional.")
+        if not np.all(np.isfinite(time)):
+            raise ValueError("AnalysisResult.time must be finite.")
+        if time.size > 1 and np.any(np.diff(time) <= 0.0):
+            raise ValueError("AnalysisResult.time must be strictly increasing.")
         if self.relative.displacement.shape[0] != time.size:
             raise ValueError("Response histories must have one row per time sample.")
+        if self.absolute is not None and self.absolute.displacement.shape != self.relative.displacement.shape:
+            raise ValueError("AnalysisResult.absolute must match relative response shape.")
+        if self.ground is not None and self.ground.displacement.shape[0] != time.size:
+            raise ValueError("AnalysisResult.ground must have one row per time sample.")
+        mass = np.asarray(self.mass_matrix, dtype=float)
+        stiffness = np.asarray(self.stiffness_matrix, dtype=float)
+        damping = np.asarray(self.damping_matrix, dtype=float)
+        ndof = int(np.prod(self.relative.displacement.shape[1:]))
+        if self.modal is not None and self.modal.mode_shapes.shape[0] != ndof:
+            raise ValueError("AnalysisResult.modal mode shape row count must match response DOF count.")
+        for name, matrix in (
+            ("mass_matrix", mass),
+            ("stiffness_matrix", stiffness),
+            ("damping_matrix", damping),
+        ):
+            if matrix.shape != (ndof, ndof):
+                raise ValueError(f"AnalysisResult.{name} must have shape ({ndof}, {ndof}).")
+            if not np.all(np.isfinite(matrix)):
+                raise ValueError(f"AnalysisResult.{name} must be finite.")
+            if not np.allclose(matrix, matrix.T, rtol=1.0e-8, atol=1.0e-10):
+                raise ValueError(f"AnalysisResult.{name} must be symmetric.")
         object.__setattr__(self, "time", time)
-        object.__setattr__(self, "mass_matrix", np.asarray(self.mass_matrix, dtype=float))
-        object.__setattr__(self, "stiffness_matrix", np.asarray(self.stiffness_matrix, dtype=float))
-        object.__setattr__(self, "damping_matrix", np.asarray(self.damping_matrix, dtype=float))
+        object.__setattr__(self, "mass_matrix", mass)
+        object.__setattr__(self, "stiffness_matrix", stiffness)
+        object.__setattr__(self, "damping_matrix", damping)
 
     def to_legacy_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
