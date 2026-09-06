@@ -74,7 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser = subparsers.add_parser("export-qrest", help="Export generated datasets to qREST text format.")
     export_parser.add_argument("--input", required=True, help="Generated dataset dir, or root containing generated cases.")
     export_parser.add_argument("--output", default=str(DEFAULT_OUTPUT_ROOT))
-    export_parser.add_argument("--config-source", default=DEFAULT_CONFIG_SOURCE)
+    export_parser.add_argument(
+        "--config-source",
+        default=DEFAULT_CONFIG_SOURCE,
+        help=(
+            "Optional qREST config directory to copy. "
+            "By default configs are regenerated from monitoring metadata without truth leakage."
+        ),
+    )
     export_parser.set_defaults(func=_export_qrest_command)
 
     research_parser = subparsers.add_parser("generate-research", help="Generate one research dataset with truth and observations.")

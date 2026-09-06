@@ -9,10 +9,15 @@ import numpy as np
 import pytest
 
 from qrest_model.cli import main as cli_main
-from qrest_model.datasets.cases import RESEARCH_CONFIG_ROOT, research_cases, schema_model_type
+from qrest_model.backends import run_analysis
+from qrest_model.datasets.cases import RESEARCH_CONFIG_ROOT, load_dataset_case, research_cases, schema_model_type
+from qrest_model.datasets.observations import apply_observation_config
 from qrest_model.datasets.research import generate_research_cases, generate_research_dataset
 from qrest_model.datasets.validation import validate_research_dataset, validate_research_dataset_collection
+from qrest_model.exporters.qrest_metadata import build_qrest_metadata_from_research_dataset
 from qrest_model.exporters.qrest_dataset import export_dataset
+from qrest_model.noise import apply_observation_noise
+from qrest_model.observations.series import extract_observation_series
 from qrest_model.schema import (
     EULER_BEAM_2D,
     RAYLEIGH_BEAM_2D,
@@ -221,6 +226,69 @@ def test_research_dataset_gaussian_noise_keeps_truth_and_clean_reference(tmp_pat
     assert validate_research_dataset(noisy)["physical_channel_count"] == 2
 
 
+def test_research_dataset_noise_requires_explicit_seed(tmp_path: Path) -> None:
+    case = json.loads((RESEARCH_CONFIG_ROOT / "mbi_shear_3story_sparse.json").read_text(encoding="utf-8"))
+    case["noise"] = {
+        "enabled": True,
+        "model": {"type": "gaussian_white", "target": "physical"},
+        "level": {"mode": "std_ratio", "value": 0.01},
+    }
+
+    with pytest.raises(ValueError, match="requires an explicit seed"):
+        generate_research_dataset(case, tmp_path / "missing_seed")
+
+
+def test_rigid_floor_noise_uses_scalar_physical_channel_series(tmp_path: Path) -> None:
+    case = json.loads((RESEARCH_CONFIG_ROOT / "mbi_rigid_3story_sparse.json").read_text(encoding="utf-8"))
+    case["noise"] = {
+        "enabled": True,
+        "seed": 20260907,
+        "model": {"type": "gaussian_white", "target": "physical"},
+        "level": {"mode": "std_ratio", "value": 0.05},
+    }
+
+    output = generate_research_dataset(case, tmp_path / "rigid_noisy")
+
+    clean = _csv_matrix(output / "observations" / "physical_clean" / "acceleration.csv")[:, 1:]
+    measured = _csv_matrix(output / "observations" / "physical" / "acceleration.csv")[:, 1:]
+    noise = json.loads((output / "metadata" / "noise.json").read_text(encoding="utf-8"))
+    assert len(noise["channels"]) == clean.shape[1]
+    for index, channel in enumerate(noise["channels"]):
+        signal_std = float(np.std(clean[:, index]))
+        assert channel["id"] in {"01f_x", "03f_x", "03f_y"}
+        assert channel["signal_std"] == pytest.approx(signal_std)
+        assert channel["target_noise_std"] == pytest.approx(0.05 * signal_std)
+        assert np.std(measured[:, index] - clean[:, index]) == pytest.approx(channel["realized_noise_std"])
+
+
+def test_noisy_observation_rows_are_refreshed_from_current_history() -> None:
+    case = load_dataset_case(RESEARCH_CONFIG_ROOT / "mbi_rigid_3story_sparse.json")
+    config = apply_observation_config(case.config, case.observation_config)
+    result = run_analysis(config, backend="direct")
+    noisy, _metadata = apply_observation_noise(
+        result.observations,
+        {
+            "enabled": True,
+            "seed": 20260907,
+            "model": {"type": "gaussian_white", "target": "physical"},
+            "level": {"mode": "std_ratio", "value": 0.05},
+        },
+    )
+
+    step_count = result.time.size
+    first_channel_series = extract_observation_series(noisy, 0, absolute=True)
+    first_relative_series = extract_observation_series(noisy, 0, absolute=False)
+    first_channel_rows = noisy.rows[:step_count]
+
+    assert [row["value"] for row in first_channel_rows] == pytest.approx(first_channel_series)
+    assert [row["relative_value"] for row in first_channel_rows] == pytest.approx(first_relative_series)
+    assert [row["abs_ax"] for row in first_channel_rows] == pytest.approx(first_channel_series)
+    assert not np.allclose(
+        [row["value"] for row in first_channel_rows],
+        [row["value"] for row in result.observations.rows[:step_count]],
+    )
+
+
 def test_research_dataset_noise_seed_reproducibility(tmp_path: Path) -> None:
     case = json.loads((RESEARCH_CONFIG_ROOT / "mbi_shear_3story_sparse.json").read_text(encoding="utf-8"))
     case["noise"] = {
@@ -286,10 +354,27 @@ def test_qrest_export_uses_noisy_research_physical_observations(tmp_path: Path) 
     clean = _csv_matrix(dataset / "observations" / "physical_clean" / "acceleration.csv")[:, 1:]
     exported_values = _text_matrix(exported / "qrest_noisy_data.txt")
     metadata = json.loads((exported / "qrest_noisy_metadata.json").read_text(encoding="utf-8"))
+    oma_config = json.loads((exported / "config/oma/FrequencyDomainDecomposition.json").read_text(encoding="utf-8"))
     assert np.allclose(exported_values, measured)
     assert not np.allclose(exported_values, clean)
     assert metadata["InstrumentInfo"]["ChannelNum"] == measured.shape[1]
     assert [channel["ChannelID"] for channel in metadata["InstrumentInfo"]["Channels"]] == ["01f_x", "03f_x"]
+    assert oma_config["init_frequencies"] == []
+
+
+def test_qrest_metadata_can_be_built_from_research_dataset(tmp_path: Path) -> None:
+    dataset = generate_research_dataset(
+        RESEARCH_CONFIG_ROOT / "oma_shear_12story_stochastic.json",
+        tmp_path / "oma_stochastic",
+    )
+
+    metadata = build_qrest_metadata_from_research_dataset(dataset)
+
+    assert metadata["BuildingInfo"]["ProjectName"] == "qREST_Model_oma_shear_12story_stochastic"
+    assert metadata["DataInfo"]["NPTS"] == 501
+    assert metadata["DataInfo"]["DT"] == 0.01
+    assert metadata["InstrumentInfo"]["ChannelNum"] == 12
+    assert [channel["ChannelID"] for channel in metadata["InstrumentInfo"]["Channels"][:2]] == ["01f_x", "02f_x"]
 
 
 def test_cli_generate_research_dataset_runs_and_validates(tmp_path: Path, capsys) -> None:
@@ -355,15 +440,19 @@ def test_research_case_definitions_cover_supported_schema_families() -> None:
     assert set(cases) == {
         "oma_shear_3story",
         "oma_shear_12story_research",
+        "oma_shear_12story_stochastic",
         "oma_euler_3story",
         "oma_timoshenko_3story",
+        "oma_timoshenko_12story_stochastic",
         "mbi_shear_3story_sparse",
         "mbi_euler_3story_sparse",
         "mbi_rigid_3story_sparse",
         "mbi_rayleigh_3story_sparse",
         "mbi_timoshenko_3story_sparse",
         "mbi_timoshenko_16story_research",
+        "mbi_timoshenko_16story_sparse_research",
         "mbi_shear_flexure_3story_sparse",
+        "rr_shear_12story_sparse_research",
     }
     assert {case.model_type for case in cases.values()} == {
         SHEAR_BUILDING_1D,
@@ -393,7 +482,30 @@ def test_research_case_definitions_cover_oma_and_mbi_acceptance_families() -> No
     small = {case.name for case in cases if case.research.get("scale") == "small_regression"}
     research_scale = {case.name for case in cases if case.research.get("scale") == "research_scale"}
     assert len(small) == 9
-    assert research_scale == {"oma_shear_12story_research", "mbi_timoshenko_16story_research"}
+    assert research_scale == {
+        "oma_shear_12story_research",
+        "oma_shear_12story_stochastic",
+        "oma_timoshenko_12story_stochastic",
+        "mbi_timoshenko_16story_research",
+        "mbi_timoshenko_16story_sparse_research",
+        "rr_shear_12story_sparse_research",
+    }
+    stochastic = {case.name for case in cases if case.research.get("excitation") == "stochastic"}
+    assert stochastic == {"oma_shear_12story_stochastic", "oma_timoshenko_12story_stochastic"}
+    response_reconstruction = {
+        case.name
+        for case in cases
+        if case.research.get("task") == "response_reconstruction"
+    }
+    assert response_reconstruction == {"rr_shear_12story_sparse_research"}
+
+
+def test_research_scale_cases_have_standard_metadata() -> None:
+    required_keys = {"task", "family", "excitation", "sensor_density", "noise_level", "scale"}
+    for case in research_cases():
+        if case.research.get("scale") != "research_scale":
+            continue
+        assert required_keys <= set(case.research), case.name
 
 
 def test_generate_research_cases_runs_all_configured_cases(tmp_path: Path) -> None:
@@ -404,15 +516,19 @@ def test_generate_research_cases_runs_all_configured_cases(tmp_path: Path) -> No
     assert {path.name for path in generated} == {
         "oma_shear_3story",
         "oma_shear_12story_research",
+        "oma_shear_12story_stochastic",
         "oma_euler_3story",
         "oma_timoshenko_3story",
+        "oma_timoshenko_12story_stochastic",
         "mbi_shear_3story_sparse",
         "mbi_euler_3story_sparse",
         "mbi_rigid_3story_sparse",
         "mbi_rayleigh_3story_sparse",
         "mbi_timoshenko_3story_sparse",
         "mbi_timoshenko_16story_research",
+        "mbi_timoshenko_16story_sparse_research",
         "mbi_shear_flexure_3story_sparse",
+        "rr_shear_12story_sparse_research",
     }
     assert (tmp_path / "research" / "manifest.json").exists()
     for path in generated:
@@ -420,7 +536,7 @@ def test_generate_research_cases_runs_all_configured_cases(tmp_path: Path) -> No
         assert summary["name"] == path.name
         assert summary["physical_channel_count"] > 0
     collection = validate_research_dataset_collection(tmp_path / "research")
-    assert collection["dataset_count"] == 11
+    assert collection["dataset_count"] == 15
 
 
 def test_research_benchmarks_include_oma_truth_and_mbi_observation_layout(tmp_path: Path) -> None:
@@ -458,25 +574,40 @@ def test_research_scale_benchmarks_are_representative(tmp_path: Path) -> None:
             path.name: path
             for path in generate_research_cases(
                 tmp_path / "research",
-                ["oma_shear_12story_research", "mbi_timoshenko_16story_research"],
+                [
+                    "oma_shear_12story_research",
+                    "mbi_timoshenko_16story_research",
+                    "mbi_timoshenko_16story_sparse_research",
+                    "rr_shear_12story_sparse_research",
+                ],
             )
         }
 
     oma = generated["oma_shear_12story_research"]
     mbi = generated["mbi_timoshenko_16story_research"]
+    mbi_sparse = generated["mbi_timoshenko_16story_sparse_research"]
+    rr = generated["rr_shear_12story_sparse_research"]
     oma_manifest = json.loads((oma / "manifest.json").read_text(encoding="utf-8"))
     mbi_manifest = json.loads((mbi / "manifest.json").read_text(encoding="utf-8"))
+    mbi_sparse_manifest = json.loads((mbi_sparse / "manifest.json").read_text(encoding="utf-8"))
+    rr_manifest = json.loads((rr / "manifest.json").read_text(encoding="utf-8"))
     oma_observation = json.loads((oma / "metadata" / "observation.json").read_text(encoding="utf-8"))
     mbi_observation = json.loads((mbi / "metadata" / "observation.json").read_text(encoding="utf-8"))
+    mbi_sparse_observation = json.loads((mbi_sparse / "metadata" / "observation.json").read_text(encoding="utf-8"))
+    rr_observation = json.loads((rr / "metadata" / "observation.json").read_text(encoding="utf-8"))
 
     assert oma_manifest["research"]["scale"] == "research_scale"
     assert oma_manifest["research"]["benchmark_role"] == "oma_baseline"
+    assert oma_manifest["research"]["excitation"] == "deterministic_multisine"
+    assert oma_manifest["research"]["noise_level"] == "clean"
     assert oma_manifest["content_summary"]["time_steps"] == 501
     assert oma_manifest["content_summary"]["dof_count"] == 12
     assert oma_observation["physical_channel_count"] == 12
     assert oma_observation["virtual_channel_count"] == 0
     assert mbi_manifest["research"]["scale"] == "research_scale"
     assert mbi_manifest["research"]["benchmark_role"] == "mbi_baseline"
+    assert mbi_manifest["research"]["excitation"] == "deterministic_multisine"
+    assert mbi_manifest["research"]["noise_level"] == "clean"
     assert mbi_manifest["content_summary"]["time_steps"] == 501
     assert mbi_manifest["content_summary"]["dof_count"] == 32
     assert mbi_observation["physical_channel_count"] == 5
@@ -485,6 +616,75 @@ def test_research_scale_benchmarks_are_representative(tmp_path: Path) -> None:
         "Theta",
         "Theta",
     ]
+    assert mbi_sparse_manifest["research"]["task"] == "mode_completion"
+    assert mbi_sparse_manifest["research"]["sensor_density"] == "sparse"
+    assert mbi_sparse_manifest["content_summary"]["dof_count"] == 32
+    assert mbi_sparse_observation["physical_channel_count"] == 3
+    assert mbi_sparse_observation["virtual_channel_count"] == 2
+    assert rr_manifest["research"]["task"] == "response_reconstruction"
+    assert rr_manifest["research"]["sensor_density"] == "sparse"
+    assert rr_manifest["content_summary"]["dof_count"] == 12
+    assert rr_observation["physical_channel_count"] == 4
+    assert rr_observation["virtual_channel_count"] == 0
+    assert {channel["kind"] for channel in rr_observation["channels"]} == {"physical"}
+
+
+def test_stochastic_research_cases_are_reproducible_and_variable(tmp_path: Path) -> None:
+    case = json.loads((RESEARCH_CONFIG_ROOT / "oma_shear_12story_stochastic.json").read_text(encoding="utf-8"))
+    same_seed = json.loads(json.dumps(case))
+    different_seed = json.loads(json.dumps(case))
+    different_seed["model_config"]["ground_motion"]["stochastic"]["seed"] = 4102
+
+    first = generate_research_dataset(case, tmp_path / "first")
+    second = generate_research_dataset(same_seed, tmp_path / "second")
+    third = generate_research_dataset(different_seed, tmp_path / "third")
+
+    with (
+        np.load(first / "truth" / "response.npz") as first_response,
+        np.load(second / "truth" / "response.npz") as second_response,
+        np.load(third / "truth" / "response.npz") as third_response,
+        np.load(first / "truth" / "matrices.npz") as first_matrices,
+        np.load(third / "truth" / "matrices.npz") as third_matrices,
+        np.load(first / "truth" / "modal.npz") as first_modal,
+        np.load(third / "truth" / "modal.npz") as third_modal,
+    ):
+        assert np.allclose(first_response["ground_acceleration"], second_response["ground_acceleration"])
+        assert np.allclose(first_response["relative_acceleration"], second_response["relative_acceleration"])
+        assert not np.allclose(first_response["ground_acceleration"], third_response["ground_acceleration"])
+        assert not np.allclose(first_response["relative_acceleration"], third_response["relative_acceleration"])
+        assert np.allclose(first_matrices["mass_matrix"], third_matrices["mass_matrix"])
+        assert np.allclose(first_matrices["stiffness_matrix"], third_matrices["stiffness_matrix"])
+        assert np.allclose(first_modal["frequency_hz"], third_modal["frequency_hz"])
+
+    first_manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
+    first_provenance = json.loads((first / "metadata" / "provenance.json").read_text(encoding="utf-8"))
+    assert first_manifest["research"]["excitation"] == "stochastic"
+    assert first_manifest["excitation"] == {
+        "type": "stochastic",
+        "dt": 0.01,
+        "duration": 5.0,
+        "seed": 4101,
+        "source": "generated_stochastic",
+    }
+    assert first_provenance["random_seed"] == 4101
+    assert first_provenance["excitation"] == first_manifest["excitation"]
+    assert first_manifest["content_summary"]["physical_channel_count"] == 12
+
+
+def test_stochastic_oma_beam_case_exports_only_u_physical_observations(tmp_path: Path) -> None:
+    output = generate_research_dataset(
+        RESEARCH_CONFIG_ROOT / "oma_timoshenko_12story_stochastic.json",
+        tmp_path / "oma_beam",
+    )
+    observation = json.loads((output / "metadata" / "observation.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["research"]["task"] == "oma"
+    assert manifest["research"]["excitation"] == "stochastic"
+    assert observation["physical_channel_count"] == 12
+    assert observation["virtual_channel_count"] == 2
+    assert {channel["dof"] for channel in observation["channels"] if channel["kind"] == "virtual"} == {"Theta"}
+    assert {channel["direction"] for channel in observation["channels"] if channel["kind"] == "physical"} == {"X"}
 
 
 def test_generate_research_cases_writes_collection_manifest(tmp_path: Path) -> None:

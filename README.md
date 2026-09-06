@@ -50,13 +50,13 @@ output/                          多模型族默认输出，默认被 git 忽略
 input/                           多模型共用的外部激励文件
 config/
   datasets/                      批量生成测试数据的工况配置
-  research/                      Stage 3 研究数据集 benchmark 配置
+  research/                      Stage 3/4 研究数据集 benchmark 配置
 scripts/                         数据集生成、测点映射、元信息和导出入口
-  build_datasets.py
-  map_sensors.py
+  build_datasets.py              legacy / regression dataset 生成入口
+  map_sensors.py                 legacy master time-history 测点映射辅助入口
   make_metadata.py
   make_algorithm_configs.py
-  export_datasets.py              兼容命令行包装，实际导出逻辑在 qrest_model/exporters/
+  export_datasets.py              Research Dataset / generated dataset 到 qREST monitoring dataset 的主转换入口
 qrest_model/
   analysis/                      统一线性系统、Newmark 和模态分析
   schema/                        配置 schema、dataclass 和归一化入口
@@ -481,14 +481,14 @@ summary.json
 
 其中矩阵 CSV 使用 DOF 标签作为行列名；`modal_frequencies.csv` 输出圆频率、Hz 频率和周期；`mode_shapes.csv` 输出质量归一化振型，列为 `mode_01`、`mode_02` 等。
 
-`config` 目录仿照 `resource/qrest_data/<dataset>/config`，但参数由当前模型数据生成，而不是复制 Kunming/Wuhan 或通用 `resource/config`：
+`config` 目录仿照 `resource/qrest_data/<dataset>/config`，但默认只由 monitoring metadata 和数据长度推导，不读取结构真值：
 
-- 预处理和 RR 的滤波频带根据采样频率和结构基频生成。
-- OMA 的 `init_frequencies` 来自 `structural_properties/modal_frequencies.csv`。
-- MaxEDP 的 `column_position` 来自模型平面足迹。
-- IM 的特征周期使用结构基准周期。
+- 预处理和 RR 的滤波频带根据采样频率和 Nyquist 频率生成。
+- OMA 的 `init_frequencies` 默认留空，交由算法自动识别或由用户显式提供。
+- MaxEDP 的 `column_position` 来自监测 metadata 中的 channel 位置。
+- IM 的特征周期使用通用默认值，不自动读取真实结构周期。
 
-导出为 qREST 文本数据集时，`qrest_model.exporters.qrest_dataset` 会优先复制生成数据目录中的这个 `config/`；`scripts/export_datasets.py` 仍保留为兼容命令行入口。
+导出为 qREST 文本数据集时，`qrest_model.exporters.qrest_dataset` 会默认重新生成无真值泄漏的 `config/`；只有显式传入 `--config-source` 时才复制用户指定配置。`scripts/export_datasets.py` 是 Stage 4 推荐的监测数据集转换入口。
 
 正式工况主要在 1F、3F、7F、11F、16F 布设测点，错层混合工况额外在 1F、4F、8F、12F、16F 布设中心 Y 测点。模型配置使用均匀侧向刚度：所有楼层继承同一个四角构件布置，`stories` 中只保留楼层编号以简化配置。扭转工况通过质量中心偏心 `[0.2, 0.3]` 产生，几何中心仍为 `[0.0, 0.0]`。输入地震动采样间隔按原始文件设置为 `0.02s`。
 
@@ -503,7 +503,15 @@ summary.json
 
 该脚本生成的 `metadata.json` 使用 qREST 标准字段：`BuildingInfo`、`InstrumentInfo` 和 `DataInfo`。通道顺序与 `acceleration.csv` 中观测列顺序一致，X/Y/Z 方向分别使用 Azimuth `90/0/-1`。
 
-如果只调整测点方案，不需要重新计算结构响应。修改 `config.json` 中的 `sensors` 后，可用所有质点时程重新映射测点：
+也可以直接从 Stage 4 Research Dataset 生成 qREST metadata：
+
+```bash
+.venv/bin/python scripts/make_metadata.py \
+  --research-dataset output/research_datasets/oma_shear_12story_stochastic \
+  --output output/research_datasets/oma_shear_12story_stochastic/metadata_qrest.json
+```
+
+如果只调整 legacy/regression dataset 的测点方案，不需要重新计算结构响应。修改 `config.json` 中的 `sensors` 后，可用所有质点时程重新映射测点：
 
 ```bash
 .venv/bin/python scripts/map_sensors.py \
@@ -549,9 +557,10 @@ xmake run example_rr_pymethod resource/test_output/generated_datasets/two_x_one_
 
 ## 生成研究数据集
 
-Stage 3 新增 research dataset 出口，用于同时保存完整结构真值、physical observation 和 virtual probe。它与 qREST text dataset 分离：research dataset 面向算法研究和真值验证，qREST dataset 面向模拟真实监测数据。
+Stage 3/4 形成 research dataset 出口和标准监测数据集转换链路，用于同时保存完整结构真值、physical observation、virtual probe，并进一步导出 qREST text dataset。research dataset 面向算法研究和真值验证，qREST dataset 面向模拟真实监测数据。
 
 Stage 3/3.5 已完成收口，完整阶段记录见 `docs/history/stage3_completion_qrest_model.md`。
+Stage 4 已完成研究场景适配与标准数据生成收口，完整阶段记录见 `docs/history/stage4_completion_qrest_model.md`。
 
 生成单个研究数据集：
 
@@ -608,7 +617,7 @@ metadata/
 
 `truth/response.npz` 保存完整 `relative/absolute/ground` 时程；`truth/matrices.npz` 保存 `M/K/C` 和 DOF 标签；`truth/modal.npz` 保存真实频率、周期和质量归一化振型。`truth/structural_properties.json` 记录 modal truth 的质量归一化、振型符号约定和 DOF 单位。`derived/structural.npz` 保存由 truth 计算得到的派生结构量，当前包括平动层间位移差、层间位移角和 beam-like 模型的层间转角差，并在 `metadata/derived.json` 记录单位、shape 和来源。`observations/physical` 保存 physical sensor 通道；无噪声时它是 clean observation，有噪声时它是 measured/noisy observation，同时 `observations/physical_clean` 保存 clean reference。`observations/virtual` 保存研究用 virtual probe，噪声不会作用于 virtual probe。`metadata/noise.json` 记录 Gaussian white noise 的 seed、target、std_ratio 和每个 physical channel 的信号/噪声统计。`metadata/observation.json` 为每个 channel 保存 observation operator，research validator 会检查 operator 结构、frame、quantity、story、DOF 和系数合法性。单个 dataset 的 `manifest.json` 带有 `content_summary`，用于快速读取 time steps、DOF 数、observation 数量、observation quantity 和 derived quantity ID。`model_config_hash_sha256` 只标识结构模型，`dataset_config_hash_sha256` 同时包含 observation/noise/research metadata；manifest 和 provenance 不写生成时间戳，因此同一 config/backend/seed 生成结果可复现。`qrest-model export-qrest` 可直接读取 research dataset；它导出 `observations/physical`，因此噪声启用时 qREST text dataset 使用 measured physical observation，而不是 `physical_clean`。
 
-`config/research/` 当前提供 9 个小规模 deterministic regression benchmark 和 2 个 research-scale benchmark，覆盖所有 schema model family，并满足 Stage 3 第一批 OMA/MBI 族类覆盖：
+`config/research/` 当前提供 9 个小规模 deterministic regression benchmark、2 个 Stage 3 research-scale baseline、2 个 Stage 4 stochastic OMA case，以及 1 个 sparse MBI 和 1 个 response reconstruction 标准 case，覆盖所有 schema model family，并满足第一批 OMA/MBI/RR 场景覆盖：
 
 ```text
 oma_shear_3story                    shear_building_1d，OMA 用全楼层 X 加速度
@@ -621,10 +630,15 @@ mbi_rayleigh_3story_sparse          rayleigh_beam_2d，稀疏 U 加速度与 The
 mbi_timoshenko_3story_sparse        timoshenko_beam_2d，稀疏 U 加速度与 Theta virtual probe
 mbi_shear_flexure_3story_sparse     shear_flexure_building_2d，稀疏 U 加速度与 Theta virtual probe
 oma_shear_12story_research          shear_building_1d，research-scale OMA，全楼层 X 加速度，多频确定性输入
+oma_shear_12story_stochastic        shear_building_1d，Stage 4 stochastic OMA，全楼层 X 加速度
+oma_timoshenko_12story_stochastic   timoshenko_beam_2d，Stage 4 stochastic OMA，全楼层 U 加速度与 Theta virtual probe
 mbi_timoshenko_16story_research     timoshenko_beam_2d，research-scale MBI，5 层 U 加速度与 2 个 Theta virtual probe
+mbi_timoshenko_16story_sparse_research
+                                    timoshenko_beam_2d，Stage 4 sparse MBI，3 层 U 加速度与 2 个 Theta virtual probe
+rr_shear_12story_sparse_research    shear_building_1d，Stage 4 response reconstruction，4 层 X 加速度
 ```
 
-这些 benchmark 的单个 `manifest.json` 会保留 `truth_policy`、`observation_config`、`noise_config`、`export_policy` 和 `research` 元数据；批量根目录的集合索引会把这些 case 摘要汇总到一个稳定 JSON 中，便于后续 OMA、mode completion 和 model-based identification 流程按研究任务筛选。`config/research` 中的布局以顶层 `observations` 为唯一事实来源；`model_config.sensors` 仅作为普通模型配置和旧输入兼容路径保留。
+这些 benchmark 的单个 `manifest.json` 会保留 `truth_policy`、`observation_config`、`noise_config`、`export_policy` 和 `research` 元数据；批量根目录的集合索引会把这些 case 摘要汇总到一个稳定 JSON 中，便于后续 OMA、mode completion、model-based identification 和 response reconstruction 流程按研究任务筛选。`config/research` 中的布局以顶层 `observations` 为唯一事实来源；`model_config.sensors` 仅作为普通模型配置和旧输入兼容路径保留。
 
 ## 官方批量测试工况
 
@@ -748,7 +762,7 @@ story3d/configs/variable_stiffness_16story_external_gm.json
 - `elements`：构件位置和 X/Y 向刚度
 - `sensors`：测点楼层、坐标、方向和响应类型
 - `damping`：Rayleigh 阻尼设置
-- `ground_motion`：地震动时间步、总时长、文件输入或合成输入
+- `ground_motion`：地震动时间步、总时长、文件输入、确定性合成输入或随机激励
 
 坐标默认相对于几何中心。加载配置时，程序会把构件、测点和刚心坐标转换到每层质心坐标系：
 
@@ -814,6 +828,31 @@ n_steps = round(duration / dt) + 1
 如果单列文件有 15000 个点，且 `dt=0.01`，应设置 `duration=149.99`，这样输出时间为 `0.00 ~ 149.99 s`，正好使用全部 15000 个点。
 
 `ax_scale` 和 `ay_scale` 可用于单位换算或幅值缩放。例如输入文件单位为 `g`，而分析希望使用 `m/s^2`，可设置缩放系数为 `9.80665`。
+
+### 随机激励
+
+Stage 4 支持可复现的 Gaussian stochastic excitation，用于生成 OMA 类型研究数据。随机激励与 measurement noise 是两个不同过程：前者先输入结构并影响完整响应，后者只作用于 physical observation。
+
+```json
+{
+  "ground_motion": {
+    "type": "stochastic",
+    "dt": 0.01,
+    "duration": 5.0,
+    "stochastic": {
+      "seed": 4101,
+      "std_x": 0.035,
+      "std_y": 0.0,
+      "band": {
+        "low_hz": 0.05,
+        "high_hz": 8.0
+      }
+    }
+  }
+}
+```
+
+`seed` 为必填项；相同结构、激励配置和 seed 会生成相同输入与响应。`std_x/std_y` 控制 X/Y 向加速度标准差，也可用 `std` 或 `amplitude` 作为默认标准差。`band` 为可选的简单频带裁剪。
 
 ## 测试
 

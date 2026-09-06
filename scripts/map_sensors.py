@@ -6,9 +6,14 @@ from pathlib import Path
 
 from qrest_model.postprocess.master_mapping import map_sensors
 
+LEGACY_DESCRIPTION = (
+    "Legacy helper for mapping model master time histories to configured sensor channels. "
+    "Stage 4 research dataset conversion should use `scripts/export_datasets.py`."
+)
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Map model master time histories to configured sensor channels.")
+    parser = argparse.ArgumentParser(description=LEGACY_DESCRIPTION)
     parser.add_argument("--config", required=True, help="Path to model config.json with sensors.")
     parser.add_argument("--master-dir", required=True, help="Directory containing master acceleration/velocity/displacement CSV files.")
     parser.add_argument("--output-dir", required=True, help="Directory for mapped sensor time histories.")

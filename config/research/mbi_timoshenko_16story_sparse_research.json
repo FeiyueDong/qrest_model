@@ -1,16 +1,16 @@
 {
-  "name": "mbi_timoshenko_16story_research",
+  "name": "mbi_timoshenko_16story_sparse_research",
   "data_type": "research",
   "model_type": "timoshenko_beam_2d",
-  "description": "Research-scale deterministic Timoshenko MBI baseline with sparse U acceleration observations and retained Theta virtual probes.",
+  "description": "Stage 4 standard sparse Timoshenko mode-completion case with retained full structural truth.",
   "research": {
     "task": "mode_completion",
     "family": "timoshenko",
     "excitation": "deterministic_multisine",
-    "sensor_density": "medium",
+    "sensor_density": "sparse",
     "noise_level": "clean",
     "scale": "research_scale",
-    "benchmark_role": "mbi_baseline",
+    "benchmark_role": "standard_monitoring_dataset",
     "mismatch_candidate": "euler_beam_2d"
   },
   "truth_policy": {
@@ -20,7 +20,7 @@
   },
   "observations": {
     "physical": {
-      "stories": [1, 4, 8, 12, 16],
+      "stories": [1, 8, 16],
       "dofs": ["U"],
       "quantity": "acceleration"
     },

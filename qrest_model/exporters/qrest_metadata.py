@@ -92,6 +92,28 @@ def build_qrest_metadata_from_files(
     )
 
 
+def build_qrest_metadata_from_research_dataset(
+    dataset_dir: str | Path,
+    *,
+    data_path: str | Path | None = None,
+    project_name: str | None = None,
+    event_name: str | None = None,
+    provider: str = "qREST_MODEL",
+) -> dict[str, Any]:
+    dataset = Path(dataset_dir)
+    manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
+    observation = json.loads((dataset / "metadata" / "observation.json").read_text(encoding="utf-8"))
+    config = json.loads((dataset / "config.json").read_text(encoding="utf-8"))
+    inferred_data_path = Path(data_path) if data_path is not None else _research_primary_observation_file(dataset, observation)
+    return build_qrest_metadata(
+        config,
+        npts=count_csv_data_rows(inferred_data_path),
+        project_name=project_name or f"qREST_Model_{manifest['name']}",
+        event_name=event_name or f"MODEL_{str(manifest['name']).upper()}",
+        provider=provider,
+    )
+
+
 def write_qrest_metadata(metadata: dict[str, Any], output_path: str | Path) -> None:
     Path(output_path).write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
@@ -104,6 +126,14 @@ def count_csv_data_rows(path: str | Path | None) -> int | None:
         return None
     with Path(path).open("r", newline="", encoding="utf-8") as handle:
         return sum(1 for _row in csv.DictReader(handle))
+
+
+def _research_primary_observation_file(dataset: Path, observation: dict[str, Any]) -> Path:
+    physical_files = observation.get("files", {}).get("physical", {})
+    acceleration = physical_files.get("acceleration")
+    if acceleration is None:
+        raise ValueError("Research metadata generation requires physical acceleration observations.")
+    return dataset / "observations" / str(acceleration)
 
 
 def _channels(config: dict[str, Any], elevations: list[float]) -> list[dict[str, Any]]:
@@ -233,6 +263,7 @@ def _story_sources(config: dict[str, Any]) -> list[dict[str, Any]]:
 __all__ = [
     "build_qrest_metadata",
     "build_qrest_metadata_from_files",
+    "build_qrest_metadata_from_research_dataset",
     "count_csv_data_rows",
     "write_qrest_metadata",
 ]

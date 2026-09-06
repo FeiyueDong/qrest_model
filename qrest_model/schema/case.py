@@ -105,11 +105,13 @@ class DampingConfig:
 class GroundMotionConfig:
     dt: float = 0.01
     duration: float = 20.0
+    motion_type: str = "synthetic"
     ax_file: str | None = None
     ay_file: str | None = None
     ax_scale: float = 1.0
     ay_scale: float = 1.0
     synthetic: dict[str, Any] = field(default_factory=dict)
+    stochastic: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -516,17 +518,32 @@ def normalize_damping(raw: dict[str, Any], mode_count: int) -> DampingConfig:
 
 
 def normalize_ground_motion(raw: dict[str, Any]) -> GroundMotionConfig:
+    motion_type = str(raw.get("type", "synthetic")).lower()
+    if motion_type not in {"synthetic", "stochastic", "recorded"}:
+        raise ValueError(f"Unsupported ground_motion.type: {motion_type}")
+    stochastic = dict(raw.get("stochastic", {}))
+    if motion_type == "stochastic" and not stochastic:
+        stochastic = {
+            key: value
+            for key, value in raw.items()
+            if key not in {"type", "dt", "duration", "ax_file", "ay_file", "ax_scale", "ay_scale", "synthetic"}
+        }
     ground_motion = GroundMotionConfig(
         dt=_finite_float(raw.get("dt", 0.01), "ground_motion.dt"),
         duration=_finite_float(raw.get("duration", 20.0), "ground_motion.duration"),
+        motion_type=motion_type,
         ax_file=raw.get("ax_file"),
         ay_file=raw.get("ay_file"),
         ax_scale=_finite_float(raw.get("ax_scale", 1.0), "ground_motion.ax_scale"),
         ay_scale=_finite_float(raw.get("ay_scale", 1.0), "ground_motion.ay_scale"),
         synthetic=dict(raw.get("synthetic", {})),
+        stochastic=stochastic,
     )
     if ground_motion.dt <= 0.0 or ground_motion.duration <= 0.0:
         raise ValueError("ground_motion.dt and duration must be positive.")
+    if ground_motion.motion_type == "stochastic":
+        if ground_motion.stochastic.get("seed") is None:
+            raise ValueError("ground_motion stochastic excitation requires an explicit seed.")
     return ground_motion
 
 

@@ -1,0 +1,85 @@
+{
+  "name": "oma_timoshenko_12story_stochastic",
+  "data_type": "research",
+  "model_type": "timoshenko_beam_2d",
+  "description": "Stage 4 standard stochastic beam-like OMA case with U physical acceleration and Theta retained as virtual truth probe.",
+  "research": {
+    "task": "oma",
+    "family": "timoshenko",
+    "excitation": "stochastic",
+    "sensor_density": "full",
+    "noise_level": "clean",
+    "scale": "research_scale",
+    "benchmark_role": "standard_monitoring_dataset",
+    "mismatch_candidate": "euler_beam_2d"
+  },
+  "truth_policy": {
+    "include_full_response": true,
+    "include_modal": true,
+    "include_matrices": true
+  },
+  "observations": {
+    "physical": {
+      "stories": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "dofs": ["U"],
+      "quantity": "acceleration"
+    },
+    "virtual": {
+      "stories": [6, 12],
+      "dofs": ["Theta"],
+      "quantity": "displacement"
+    }
+  },
+  "model_config": {
+    "schema_version": "2.0",
+    "model": {
+      "type": "timoshenko_beam_2d",
+      "num_stories": 12,
+      "dof_per_floor": ["U", "Theta"]
+    },
+    "geometry": {
+      "story_heights": [3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2]
+    },
+    "section_defaults": {
+      "E": 30000000000.0,
+      "G": 12500000000.0,
+      "A": 22.0,
+      "shear_area": 17.6,
+      "I": 120.0,
+      "density": 2500.0
+    },
+    "sections": [
+      {"story": 1, "I": 126.0},
+      {"story": 2, "I": 123.0},
+      {"story": 3, "I": 120.0},
+      {"story": 4, "I": 117.0},
+      {"story": 5, "I": 114.0},
+      {"story": 6, "I": 111.0},
+      {"story": 7, "I": 106.0},
+      {"story": 8, "I": 101.0},
+      {"story": 9, "I": 96.0},
+      {"story": 10, "I": 91.0},
+      {"story": 11, "I": 86.0},
+      {"story": 12, "I": 81.0}
+    ],
+    "damping": {
+      "type": "rayleigh",
+      "zeta": 0.02,
+      "modes": [1, 3]
+    },
+    "ground_motion": {
+      "type": "stochastic",
+      "dt": 0.01,
+      "duration": 5.0,
+      "stochastic": {
+        "seed": 4201,
+        "std_x": 0.03,
+        "std_y": 0.0,
+        "band": {
+          "low_hz": 0.05,
+          "high_hz": 8.0
+        }
+      }
+    }
+  }
+}

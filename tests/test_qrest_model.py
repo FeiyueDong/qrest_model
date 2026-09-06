@@ -28,6 +28,7 @@ from qrest_model.schema import (
     SHEAR_BUILDING_1D,
     load_shear_config,
     normalize_euler_config,
+    normalize_ground_motion,
     normalize_rayleigh_config,
     normalize_shear_config,
     normalize_shear_flexure_config,
@@ -1097,6 +1098,58 @@ def test_variable_16story_external_ground_motion_config() -> None:
     assert np.isclose(top[1, 1] / bottom[1, 1], 0.8)
 
 
+def test_stochastic_ground_motion_is_seeded_and_reproducible() -> None:
+    config = normalize_ground_motion(
+        {
+            "type": "stochastic",
+            "dt": 0.01,
+            "duration": 0.2,
+            "seed": 4101,
+            "std_x": 0.05,
+            "std_y": 0.0,
+        }
+    )
+    same = normalize_ground_motion(
+        {
+            "type": "stochastic",
+            "dt": 0.01,
+            "duration": 0.2,
+            "stochastic": {"seed": 4101, "std_x": 0.05, "std_y": 0.0},
+        }
+    )
+    different = normalize_ground_motion(
+        {
+            "type": "stochastic",
+            "dt": 0.01,
+            "duration": 0.2,
+            "seed": 4102,
+            "std_x": 0.05,
+            "std_y": 0.0,
+        }
+    )
+
+    first = load_ground_motion(config)
+    second = load_ground_motion(same)
+    third = load_ground_motion(different)
+
+    assert np.allclose(first["ax"], second["ax"])
+    assert np.allclose(first["ay"], 0.0)
+    assert not np.allclose(first["ax"], third["ax"])
+    assert np.std(first["ax"]) > 0.0
+
+
+def test_stochastic_ground_motion_requires_seed() -> None:
+    with pytest.raises(ValueError, match="requires an explicit seed"):
+        normalize_ground_motion(
+            {
+                "type": "stochastic",
+                "dt": 0.01,
+                "duration": 0.2,
+                "std_x": 0.05,
+            }
+        )
+
+
 def test_one_direction_shear_stiffness_assembly() -> None:
     config = normalize_shear_config(
         {
@@ -1386,6 +1439,8 @@ def test_generated_dataset_case_definitions_cover_requested_channel_forms() -> N
 def test_build_datasets_script_reexports_library_entry_points() -> None:
     assert legacy_build_datasets.dataset_cases is dataset_cases
     assert legacy_build_datasets._write_structural_properties is write_structural_properties
+    assert "legacy/regression" in legacy_build_datasets.LEGACY_DESCRIPTION
+    assert "generate-research-cases" in legacy_build_datasets.LEGACY_DESCRIPTION
 
 
 def test_export_datasets_script_reexports_library_entry_points() -> None:
@@ -1396,6 +1451,8 @@ def test_thin_scripts_reexport_library_entry_points() -> None:
     assert legacy_metadata.build_qrest_metadata is build_qrest_metadata
     assert legacy_algorithm_configs.write_algorithm_configs is write_algorithm_configs
     assert legacy_map_sensors.map_sensors is map_sensors
+    assert "Legacy helper" in legacy_map_sensors.LEGACY_DESCRIPTION
+    assert "export_datasets.py" in legacy_map_sensors.LEGACY_DESCRIPTION
 
 
 def test_cli_generate_datasets_runs_selected_case(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1578,7 +1635,7 @@ def test_structural_properties_are_written_for_generated_cases(tmp_path: Path) -
     assert mode_shape_header.startswith("dof,mode_01,mode_02")
 
 
-def test_generated_algorithm_configs_follow_model_properties(tmp_path: Path) -> None:
+def test_generated_algorithm_configs_use_monitoring_metadata_without_truth_leakage(tmp_path: Path) -> None:
     base_case = next(case for case in dataset_cases() if case.name == "two_x_one_y_torsion")
     raw_config = base_case.config | {
         "model": base_case.config["model"] | {"num_stories": 2},
@@ -1593,20 +1650,16 @@ def test_generated_algorithm_configs_follow_model_properties(tmp_path: Path) -> 
             "synthetic": {"amplitude_x": 0.1, "amplitude_y": 0.05},
         },
     }
-    case = DatasetCase(
-        name="mini_algorithm_config_case",
-        data_type="mini",
-        model_type="story3d",
-        config=raw_config,
-        description="mini",
-    )
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
-    (dataset_dir / "config.json").write_text(json.dumps(raw_config), encoding="utf-8")
-    result = run(normalize_config(raw_config))
-    write_structural_properties(case, dataset_dir / "structural_properties", result)
     metadata = build_qrest_metadata(raw_config, npts=6, project_name="mini")
     (dataset_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    truth_dir = dataset_dir / "structural_properties"
+    truth_dir.mkdir()
+    (truth_dir / "modal_frequencies.csv").write_text(
+        "mode,circular_frequency_rad_s,frequency_hz,period_s\n1,999.0,159.0,0.006\n",
+        encoding="utf-8",
+    )
 
     write_algorithm_configs(dataset_dir)
 
@@ -1615,21 +1668,17 @@ def test_generated_algorithm_configs_follow_model_properties(tmp_path: Path) -> 
     ssi_cov_config = json.loads((dataset_dir / "config/oma/SSICOV.json").read_text(encoding="utf-8"))
     max_edp_config = json.loads((dataset_dir / "config/edp/MaxEDP.json").read_text(encoding="utf-8"))
     im_config = json.loads((dataset_dir / "config/im/IntensityMeasures.json").read_text(encoding="utf-8"))
-    modal_rows = (dataset_dir / "structural_properties/modal_frequencies.csv").read_text(encoding="utf-8").splitlines()
-    first_frequency = float(modal_rows[1].split(",")[2])
-    first_period = float(modal_rows[1].split(",")[3])
 
-    assert rr_config["fc_low"] == round(max(0.02, min(0.10, 0.12 * first_frequency)), 6)
+    assert rr_config["fc_low"] == 0.02
     assert rr_config["fc_high"] == 20.0
     assert oma_config["nfft"] == 4
-    assert oma_config["init_frequencies"][0][0] == round(first_frequency, 6)
+    assert oma_config["num_orders"] == 6
+    assert oma_config["init_frequencies"] == []
+    assert oma_config["search_bandwidth"] == 0.2
     assert ssi_cov_config["Nmin"] == 2
     assert ssi_cov_config["Nmax"] == 30
     assert ssi_cov_config["frequency_band"] == [0.2, 5.0]
     assert max_edp_config["column_position"] == [
-        [-5.0, -3.0],
-        [-5.0, 0.0],
-        [-5.0, 3.0],
         [0.0, -3.0],
         [0.0, 0.0],
         [0.0, 3.0],
@@ -1637,7 +1686,8 @@ def test_generated_algorithm_configs_follow_model_properties(tmp_path: Path) -> 
         [5.0, 0.0],
         [5.0, 3.0],
     ]
-    assert im_config["response_spectrum_ti"]["period_ti"] == round(first_period, 6)
+    assert im_config["response_spectrum"]["max_period"] == 6.0
+    assert im_config["response_spectrum_ti"]["period_ti"] == 1.0
 
 
 def test_qrest_metadata_uses_geometry_elevations() -> None:
@@ -1790,6 +1840,7 @@ def test_export_dataset_matches_metadata_channel_order(tmp_path: Path) -> None:
     )
 
     assert (exported / "qrest_case_metadata.json").exists()
+    assert (exported / "config/oma/FrequencyDomainDecomposition.json").exists()
     assert (exported / "qrest_case_data.txt").read_text(encoding="utf-8") == (
         "2.0 1.0\n4.0 3.0\n"
     )

@@ -25,7 +25,10 @@ def main() -> None:
     parser.add_argument(
         "--config-source",
         default=DEFAULT_CONFIG_SOURCE,
-        help="qREST dataset config directory to copy. Defaults to the generated dataset config/ directory.",
+        help=(
+            "Optional qREST config directory to copy. "
+            "By default configs are regenerated from monitoring metadata without truth leakage."
+        ),
     )
     args = parser.parse_args()
 

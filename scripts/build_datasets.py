@@ -45,10 +45,15 @@ from qrest_model.exporters.time_history import (
     write_story3d_master_time_history as _write_story3d_master_time_history,
 )
 
+LEGACY_DESCRIPTION = (
+    "Generate legacy/regression qREST model test datasets. "
+    "New research scenarios should use `qrest-model generate-research-cases` "
+    "and `scripts/export_datasets.py`."
+)
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate qREST model test datasets.")
+    parser = argparse.ArgumentParser(description=LEGACY_DESCRIPTION)
     parser.add_argument(
         "--output-root",
         default=str(MODEL_ROOT / "output" / "test_datasets"),

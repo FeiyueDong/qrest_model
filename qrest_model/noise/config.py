@@ -41,7 +41,16 @@ def normalize_noise_config(raw: dict[str, Any] | None) -> NoiseConfig:
     seed_raw = raw.get("seed")
     seed = int(seed_raw) if seed_raw is not None else None
     if not enabled:
-        return NoiseConfig(enabled=False, seed=seed, noise_type=noise_type, target=target, level_mode=level_mode, level_value=level_value)
+        return NoiseConfig(
+            enabled=False,
+            seed=seed,
+            noise_type=noise_type,
+            target=target,
+            level_mode=level_mode,
+            level_value=level_value,
+        )
+    if seed is None:
+        raise ValueError("Research noise requires an explicit seed when enabled.")
     if noise_type != "gaussian_white":
         raise ValueError("Stage 3.5 only supports gaussian_white noise.")
     if target != "physical":

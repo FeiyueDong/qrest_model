@@ -57,6 +57,13 @@ def write_shear_master_time_history(
 
 
 def load_ground_motion_from_raw(raw: dict[str, Any]) -> dict[str, np.ndarray]:
+    stochastic = dict(raw.get("stochastic", {}))
+    if str(raw.get("type", "synthetic")).lower() == "stochastic" and not stochastic:
+        stochastic = {
+            key: value
+            for key, value in raw.items()
+            if key not in {"type", "dt", "duration", "ax_file", "ay_file", "ax_scale", "ay_scale", "synthetic"}
+        }
     return load_ground_motion(
         GroundMotionConfig(
             dt=float(raw.get("dt", 0.02)),
@@ -65,7 +72,9 @@ def load_ground_motion_from_raw(raw: dict[str, Any]) -> dict[str, np.ndarray]:
             ay_file=raw.get("ay_file"),
             ax_scale=float(raw.get("ax_scale", 1.0)),
             ay_scale=float(raw.get("ay_scale", 1.0)),
+            motion_type=str(raw.get("type", "synthetic")),
             synthetic=dict(raw.get("synthetic", {})),
+            stochastic=stochastic,
         )
     )
 

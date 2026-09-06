@@ -1,16 +1,16 @@
 {
-  "name": "oma_shear_12story_research",
+  "name": "rr_shear_12story_sparse_research",
   "data_type": "research",
   "model_type": "shear_building_1d",
-  "description": "Research-scale deterministic shear OMA baseline with full-floor physical acceleration observations and multi-sine excitation.",
+  "description": "Stage 4 standard sparse physical-observation case for response-reconstruction studies.",
   "research": {
-    "task": "oma",
+    "task": "response_reconstruction",
     "family": "shear",
     "excitation": "deterministic_multisine",
-    "sensor_density": "full",
+    "sensor_density": "sparse",
     "noise_level": "clean",
     "scale": "research_scale",
-    "benchmark_role": "oma_baseline"
+    "benchmark_role": "standard_monitoring_dataset"
   },
   "truth_policy": {
     "include_full_response": true,
@@ -19,7 +19,7 @@
   },
   "observations": {
     "physical": {
-      "stories": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "stories": [1, 4, 8, 12],
       "directions": ["X"],
       "quantity": "acceleration"
     }

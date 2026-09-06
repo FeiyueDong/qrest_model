@@ -13,6 +13,7 @@ from qrest_model.exporters.model_truth import truth_dof_labels, write_model_trut
 from qrest_model.exporters.qrest_metadata import (
     build_qrest_metadata,
     build_qrest_metadata_from_files,
+    build_qrest_metadata_from_research_dataset,
     write_qrest_metadata,
 )
 from qrest_model.exporters.research_dataset import stable_config_hash, write_research_dataset
@@ -36,6 +37,7 @@ __all__ = [
     "stable_config_hash",
     "build_qrest_metadata",
     "build_qrest_metadata_from_files",
+    "build_qrest_metadata_from_research_dataset",
     "discover_generated_cases",
     "export_dataset",
     "export_generated_cases",

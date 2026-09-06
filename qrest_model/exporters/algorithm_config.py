@@ -1,8 +1,7 @@
-"""Generate qREST algorithm configs for model datasets."""
+"""Generate qREST algorithm configs from monitoring dataset metadata."""
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -14,20 +13,15 @@ PYTHON_HOME = "/usr"
 def write_algorithm_configs(dataset_dir: str | Path, output_dir: str | Path | None = None) -> Path:
     dataset = Path(dataset_dir)
     output = Path(output_dir) if output_dir is not None else dataset / "config"
-    metadata = json.loads((dataset / "metadata.json").read_text(encoding="utf-8"))
-    model_config = json.loads((dataset / "config.json").read_text(encoding="utf-8"))
-    modal_rows = _read_modal_frequencies(dataset / "structural_properties" / "modal_frequencies.csv")
+    metadata = _load_metadata(dataset)
 
     dt = float(metadata["DataInfo"]["DT"])
     npts = int(metadata["DataInfo"]["NPTS"])
     nyquist = 0.5 / dt
-    f0 = modal_rows[0]["frequency_hz"]
-    t0 = modal_rows[0]["period_s"]
-    fc_low = round(max(0.02, min(0.10, 0.12 * f0)), 6)
-    fc_high = round(min(20.0, 0.80 * nyquist), 6)
+    channel_num = int(metadata["InstrumentInfo"]["ChannelNum"])
+    fc_low, fc_high = _default_filter_band(nyquist)
     nfft = _largest_power_of_two_at_most(npts)
-    init_frequencies = _initial_frequencies(modal_rows, metadata["InstrumentInfo"]["ChannelNum"])
-    column_position = _column_positions(model_config)
+    column_position = _channel_positions(metadata)
 
     configs = {
         "preprocess/ButterworthFilterDenoising.json": {
@@ -89,9 +83,9 @@ def write_algorithm_configs(dataset_dir: str | Path, output_dir: str | Path | No
             "nfft": nfft,
             "overlap": 0.5,
             "window_type": "hanning",
-            "num_orders": len(init_frequencies),
-            "init_frequencies": init_frequencies,
-            "search_bandwidth": max(0.08, round(0.20 * f0, 6)),
+            "num_orders": max(1, min(6, channel_num)),
+            "init_frequencies": [],
+            "search_bandwidth": 0.2,
             "max_singular_values": 3,
             "mac_dedup_threshold": 0.98,
             "freq_dedup_threshold": 0.03,
@@ -108,9 +102,9 @@ def write_algorithm_configs(dataset_dir: str | Path, output_dir: str | Path | No
             "nfft": nfft,
             "overlap": 0.5,
             "window_type": "hanning",
-            "num_orders": len(init_frequencies),
-            "init_frequencies": init_frequencies,
-            "search_bandwidth": max(0.08, round(0.20 * f0, 6)),
+            "num_orders": max(1, min(6, channel_num)),
+            "init_frequencies": [],
+            "search_bandwidth": 0.2,
             "mac_dedup_threshold": 0.98,
             "freq_dedup_threshold": 0.03,
             "mac_bell_threshold": 0.85,
@@ -148,12 +142,12 @@ def write_algorithm_configs(dataset_dir: str | Path, output_dir: str | Path | No
             "time_history": {},
             "peak_value": {},
             "response_spectrum": {
-                "max_period": round(max(6.0, 1.8 * t0), 6),
+                "max_period": 6.0,
                 "period_step": 0.01,
                 "damping": 0.05,
             },
             "response_spectrum_ti": {
-                "period_ti": round(t0, 6),
+                "period_ti": 1.0,
                 "damping": 0.05,
             },
             "cav": {},
@@ -162,7 +156,7 @@ def write_algorithm_configs(dataset_dir: str | Path, output_dir: str | Path | No
             "sed": {},
             "housner_intensity": {
                 "damping": 0.05,
-                "housner_ti": [0.1, round(max(2.5, 1.5 * t0), 6)],
+                "housner_ti": [0.1, 2.5],
             },
             "arias_intensity": {},
             "rms_values": {},
@@ -180,22 +174,33 @@ def write_algorithm_configs(dataset_dir: str | Path, output_dir: str | Path | No
 
 def write_algorithm_configs_for_root(input_root: str | Path) -> list[Path]:
     root = Path(input_root)
-    cases = [root] if (root / "metadata.json").exists() else sorted(
-        path for path in root.iterdir() if path.is_dir() and (path / "metadata.json").exists()
+    cases = [root] if _metadata_path(root) is not None else sorted(
+        path for path in root.iterdir() if path.is_dir() and _metadata_path(path) is not None
     )
     return [write_algorithm_configs(case) for case in cases]
 
 
-def _read_modal_frequencies(path: Path) -> list[dict[str, float]]:
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        return [
-            {
-                "mode": float(row["mode"]),
-                "frequency_hz": float(row["frequency_hz"]),
-                "period_s": float(row["period_s"]),
-            }
-            for row in csv.DictReader(handle)
-        ]
+def _load_metadata(dataset: Path) -> dict[str, Any]:
+    path = _metadata_path(dataset)
+    if path is None:
+        raise FileNotFoundError(f"No qREST metadata JSON found in {dataset}.")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _metadata_path(dataset: Path) -> Path | None:
+    legacy = dataset / "metadata.json"
+    if legacy.exists():
+        return legacy
+    named = sorted(dataset.glob("*_metadata.json"))
+    return named[0] if named else None
+
+
+def _default_filter_band(nyquist: float) -> tuple[float, float]:
+    fc_low = 0.02
+    fc_high = round(min(20.0, 0.80 * nyquist), 6)
+    if fc_high <= fc_low:
+        fc_high = round(max(fc_low * 2.0, 0.95 * nyquist), 6)
+    return fc_low, fc_high
 
 
 def _largest_power_of_two_at_most(value: int) -> int:
@@ -205,22 +210,13 @@ def _largest_power_of_two_at_most(value: int) -> int:
     return max(power, 2)
 
 
-def _initial_frequencies(modal_rows: list[dict[str, float]], channel_num: int) -> list[list[float | int]]:
-    rows = modal_rows[:6]
-    singular_count = max(1, min(2, channel_num))
-    return [
-        [round(row["frequency_hz"], 6), (index % singular_count) + 1]
-        for index, row in enumerate(rows)
-    ]
-
-
-def _column_positions(model_config: dict[str, Any]) -> list[list[float]]:
-    points = [
-        (float(element["x"]), float(element["y"]))
-        for element in model_config.get("floor_defaults", {}).get("elements", [])
-    ]
+def _channel_positions(metadata: dict[str, Any]) -> list[list[float]]:
+    points = []
+    for channel in metadata["InstrumentInfo"]["Channels"]:
+        location = channel.get("LocationXYZ", [0.0, 0.0, 0.0])
+        points.append((float(location[0]), float(location[1])))
     if not points:
-        return [[-5.0, -3.0], [0.0, -3.0], [5.0, -3.0], [-5.0, 0.0], [0.0, 0.0], [5.0, 0.0], [-5.0, 3.0], [0.0, 3.0], [5.0, 3.0]]
+        return [[0.0, 0.0]]
     xs = sorted({point[0] for point in points} | {0.0})
     ys = sorted({point[1] for point in points} | {0.0})
     return [[x, y] for x in xs for y in ys]

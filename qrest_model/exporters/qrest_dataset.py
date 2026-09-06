@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from qrest_model.exporters.algorithm_config import write_algorithm_configs
 from qrest_model.exporters.qrest_metadata import build_qrest_metadata
 
 MODEL_ROOT = Path(__file__).resolve().parents[2]
@@ -49,9 +50,7 @@ def export_dataset(
     )
     _write_text_matrix(target_dir / f"{dataset_name}_data.txt", rows)
 
-    source = Path(config_source) if config_source is not None else case_dir / "config"
-    if source.exists():
-        shutil.copytree(source, target_dir / "config", dirs_exist_ok=True)
+    _prepare_algorithm_config(target_dir, config_source)
 
     return target_dir
 
@@ -128,11 +127,19 @@ def export_research_dataset(
     )
     _write_text_matrix(target_dir / f"{dataset_name}_data.txt", rows)
 
-    source = Path(config_source) if config_source is not None else case_dir / "config"
-    if source.exists():
-        shutil.copytree(source, target_dir / "config", dirs_exist_ok=True)
+    _prepare_algorithm_config(target_dir, config_source)
 
     return target_dir
+
+
+def _prepare_algorithm_config(target_dir: Path, config_source: str | Path | None) -> None:
+    if config_source is not None:
+        source = Path(config_source)
+        if not source.exists():
+            raise FileNotFoundError(f"Configured qREST config source does not exist: {source}")
+        shutil.copytree(source, target_dir / "config", dirs_exist_ok=True)
+        return
+    write_algorithm_configs(target_dir)
 
 
 def _metadata_channel_ids(metadata: dict[str, Any]) -> list[str]:

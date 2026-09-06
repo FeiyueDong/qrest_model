@@ -15,6 +15,11 @@ from qrest_model.common.io import ensure_output_dir
 from qrest_model.exporters.derived_quantities import write_derived_quantities
 from qrest_model.exporters.model_truth import write_model_truth
 from qrest_model.noise import apply_observation_noise, normalize_noise_config
+from qrest_model.observations.series import (
+    canonical_quantity,
+    extract_channel_series,
+    observation_histories,
+)
 
 
 def write_research_dataset(
@@ -98,6 +103,7 @@ def write_research_dataset(
         "model_type": truth_summary["model_type"],
         "backend": backend,
         "deterministic": True,
+        "excitation": provenance["excitation"],
         "config_hash_sha256": provenance["config_hash_sha256"],
         "model_config_hash_sha256": provenance["model_config_hash_sha256"],
         "dataset_config_hash_sha256": provenance["dataset_config_hash_sha256"],
@@ -160,11 +166,11 @@ def write_observation_tables(
             if channel.kind == kind
         ]
         for quantity in ("displacement", "velocity", "acceleration"):
-            histories = _quantity_histories(observations, quantity, kind=kind)
+            histories = observation_histories(observations, quantity, kind=kind, absolute=(kind == "physical"))
             selected = [
-                (channel, histories[index])
+                (channel, extract_channel_series(channel, histories[index]))
                 for index, channel in channel_indices
-                if histories is not None and _canonical_quantity(channel.quantity) == quantity
+                if histories is not None and canonical_quantity(channel.quantity) == quantity
             ]
             if not selected:
                 continue
@@ -223,6 +229,7 @@ def build_research_provenance(
     research: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = result.metadata.to_dict()
+    excitation = build_excitation_metadata(config)
     return {
         "name": name,
         "backend": backend,
@@ -238,8 +245,9 @@ def build_research_provenance(
             export_policy=export_policy,
             research=research,
         ),
-        "random_seed": None,
+        "random_seed": excitation.get("seed"),
         "deterministic": True,
+        "excitation": excitation,
         "truth_policy": truth_policy or {},
         "observation_config": observation_config or {},
         "noise_config": noise_config or {},
@@ -280,18 +288,38 @@ def structural_model_config(config: dict[str, Any]) -> dict[str, Any]:
     return structural
 
 
+def build_excitation_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    ground_motion = dict(config.get("ground_motion", {}))
+    motion_type = str(ground_motion.get("type", "")).lower()
+    if not motion_type:
+        motion_type = "recorded" if ground_motion.get("ax_file") or ground_motion.get("ay_file") else "synthetic"
+    stochastic = dict(ground_motion.get("stochastic", {}))
+    if motion_type == "stochastic" and not stochastic:
+        stochastic = {
+            key: value
+            for key, value in ground_motion.items()
+            if key not in {"type", "dt", "duration", "ax_file", "ay_file", "ax_scale", "ay_scale", "synthetic"}
+        }
+    return {
+        "type": motion_type,
+        "dt": float(ground_motion.get("dt", 0.0)),
+        "duration": float(ground_motion.get("duration", 0.0)),
+        "seed": stochastic.get("seed") if motion_type == "stochastic" else None,
+        "source": _excitation_source(ground_motion, motion_type),
+    }
+
+
+def _excitation_source(ground_motion: dict[str, Any], motion_type: str) -> str:
+    if ground_motion.get("ax_file") or ground_motion.get("ay_file"):
+        return "file"
+    if motion_type == "stochastic":
+        return "generated_stochastic"
+    return "generated_synthetic"
+
+
 def stable_json_hash(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def _quantity_histories(observations, quantity: str, *, kind: str):
-    if kind == "physical":
-        absolute_name = f"absolute_{quantity}"
-        absolute = getattr(observations, absolute_name)
-        if absolute is not None:
-            return absolute
-    return getattr(observations, quantity)
 
 
 def _write_wide_observation_csv(
@@ -305,52 +333,18 @@ def _write_wide_observation_csv(
         writer.writeheader()
         for step, t in enumerate(time):
             row: dict[str, Any] = {"time": float(t)}
-            for channel, history in selected:
-                row[channel.observation_id] = _channel_value(channel, history, step)
+            for channel, series in selected:
+                row[channel.observation_id] = float(series[step])
             writer.writerow(row)
 
 
 def _canonical_quantity(quantity: str) -> str:
-    normalized = quantity.lower()
-    if normalized in {"disp", "displacement"}:
-        return "displacement"
-    if normalized in {"vel", "velocity"}:
-        return "velocity"
-    if normalized in {"accel", "acceleration"}:
-        return "acceleration"
-    raise ValueError(f"Unsupported observation quantity: {quantity}")
-
-
-def _channel_value(channel: ObservationChannel, history: np.ndarray, step: int) -> float:
-    value = np.asarray(history[step], dtype=float)
-    if value.ndim == 0:
-        return float(value)
-    if value.ndim != 1:
-        raise ValueError(f"Observation history for {channel.observation_id} must be scalar or one-dimensional per step.")
-    return float(value[_component_index(channel, int(value.size))])
-
-
-def _component_index(channel: ObservationChannel, component_count: int) -> int:
-    label = (channel.direction or channel.dof or "").upper()
-    if label in {"X", "UX", "U"}:
-        return 0
-    if label in {"Y", "UY"}:
-        if component_count < 2:
-            raise ValueError(f"Observation {channel.observation_id} has no Y component.")
-        return 1
-    if label == "THETA":
-        if component_count < 2:
-            raise ValueError(f"Observation {channel.observation_id} has no Theta component.")
-        return 1
-    if label == "RZ":
-        if component_count < 3:
-            raise ValueError(f"Observation {channel.observation_id} has no RZ component.")
-        return 2
-    raise ValueError(f"Observation {channel.observation_id} does not define a component label.")
+    return canonical_quantity(quantity)
 
 
 __all__ = [
     "build_observation_metadata",
+    "build_excitation_metadata",
     "build_research_provenance",
     "stable_config_hash",
     "write_observation_tables",
