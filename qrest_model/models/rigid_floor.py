@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from qrest_model.analysis.linear_system import LinearSystem
 from qrest_model.analysis.validation import validate_positive_definite_matrix
 from qrest_model.schema import ModelConfig, StoryConfig
 from qrest_model.theory.story_stiffness import assemble_global_stiffness, assemble_mass, story_stiffness
@@ -45,11 +44,3 @@ class RigidFloorBuildingModel:
         ux = np.tile(np.array([1.0, 0.0, 0.0]), self.num_stories)
         uy = np.tile(np.array([0.0, 1.0, 0.0]), self.num_stories)
         return np.column_stack([ux, uy])
-
-    def linear_system(self, damping: np.ndarray) -> LinearSystem:
-        return LinearSystem(
-            mass=self.mass_matrix(),
-            damping=damping,
-            stiffness=self.stiffness_matrix(),
-            influence=self.influence_matrix(),
-        )

@@ -2,7 +2,7 @@
 
 本目录提供一个用于生成 qREST 测试数据的可控数值模型。它的目标不是替代精细有限元分析，而是生成结构、质量、刚度、阻尼、输入地震动和测点位置都明确可控的响应数据，方便算法单元测试、回归测试和异常结果排查。
 
-当前主要包含三自由度刚性楼板模型和单向层剪切模型。三自由度模型的基本假定为：
+当前包含三自由度刚性楼板模型、单向层剪切模型，以及 Stage 2 引入的四类二维离散线性模型。三自由度模型的基本假定为：
 
 - 结构自由度：每层 `Ux, Uy, Rz`
 - 楼板假定：刚性楼板
@@ -15,6 +15,10 @@
 
 - `rigid_floor_shear_3d`：三自由度刚性楼板剪切模型
 - `shear_building_1d`：单向层剪切模型
+- `euler_beam_2d`：Euler-Bernoulli 二维弯曲梁模型
+- `rayleigh_beam_2d`：在 Euler 刚度基础上增加节点转动惯量的 Rayleigh 梁模型
+- `timoshenko_beam_2d`：包含弯曲和剪切变形的 Timoshenko 梁模型
+- `shear_flexure_building_2d`：Euler 弯曲分支与层间剪切分支并联的弯剪建筑模型
 
 旧配置暂时仍可读取，但程序会发出 legacy warning。`dof_per_floor` 继续作为模型自由度属性保留，不再作为模型类型识别依据。
 
@@ -36,8 +40,14 @@ shear1d/                         单向层剪切模型工作区
     run_direct_shear.py
     run_opensees_shear.py
     compare_shear_backends.py
-output/                          两类模型默认输出，默认被 git 忽略
-input/                           两类模型共用的外部激励文件
+beam2d/                          二维离散线性模型工作区
+  configs/
+    euler_3story.json
+    rayleigh_3story.json
+    timoshenko_3story.json
+    shear_flexure_3story.json
+output/                          多模型族默认输出，默认被 git 忽略
+input/                           多模型共用的外部激励文件
 config/
   datasets/                      批量生成测试数据的工况配置
 scripts/                         数据集生成、测点映射、元信息和导出入口
@@ -54,26 +64,45 @@ qrest_model/
   exporters/                     后端输出、时程、结构属性和 qREST 文本数据集导出
   models/                        结构物理模型对象
   postprocess/                   测点刚性楼板映射
-  theory/                        层刚度理论公式
+  theory/                        层刚度、梁单元和弯剪模型理论公式
   backends/
     direct_stiffness.py          三自由度：直接矩阵 + Newmark
     opensees_story.py            三自由度：OpenSeesPy 建模和动力分析
     direct_shear.py              单向层剪切：直接矩阵 + Newmark
     opensees_shear.py            单向层剪切：OpenSeesPy
+    direct_euler.py              Euler 梁：统一线性直接法
+    opensees_euler.py            Euler 梁：OpenSees elasticBeamColumn
+    direct_rayleigh.py           Rayleigh 梁：Euler 刚度 + 节点转动惯量
+    opensees_rayleigh.py         Rayleigh 梁：elasticBeamColumn + 节点转动质量
+    direct_timoshenko.py         Timoshenko 梁：显式 Timoshenko 矩阵
+    opensees_timoshenko.py       Timoshenko 梁：ElasticTimoshenkoBeam
+    direct_shear_flexure.py      弯剪建筑：Euler 分支 + 层间剪切分支
+    opensees_shear_flexure.py    弯剪建筑：elasticBeamColumn + twoNodeLink
 ```
 
 ## 两种后端
 
-### `direct_stiffness`
+### Direct
 
-使用 NumPy 显式组装总体质量矩阵 `M`、刚度矩阵 `K` 和 Rayleigh 阻尼矩阵 `C`，再用线性 Newmark 方法进行时程积分。该方法主要用于理论对照和回归测试。
+Direct 后端使用 NumPy 显式组装总体质量矩阵 `M`、刚度矩阵 `K` 和 Rayleigh 阻尼矩阵 `C`，再用统一线性 Newmark 方法进行时程积分。该方法主要用于理论对照和回归测试。
 
-支持两种层刚度定义：
+当前 Direct 后端按模型类型分发：
+
+- `direct_stiffness`：三自由度刚性楼板剪切模型
+- `direct_shear`：单向层剪切模型
+- `direct_euler`：Euler-Bernoulli 二维梁
+- `direct_rayleigh`：Rayleigh 二维梁
+- `direct_timoshenko`：Timoshenko 二维梁
+- `direct_shear_flexure`：二维弯剪建筑模型
+
+三自由度刚性楼板模型支持两种层刚度定义：
 
 - 通过构件布置自动计算：`elements`
 - 直接给定层刚度和刚心：`direct_stiffness`
 
-### `opensees_story`
+二维线性模型复用同一个 `run_linear_direct()` 入口，不复制 Newmark、Rayleigh damping 或 modal analysis。
+
+### OpenSees
 
 使用 OpenSeesPy 建立二维三自由度楼层模型：
 
@@ -86,6 +115,15 @@ qrest_model/
 
 注意：OpenSees 后端要求每层显式给出 `elements`。若配置只给了 `direct_stiffness`，请使用 `direct_stiffness` 后端。
 构件可通过可选 `id` 字段声明跨楼层对应关系；一旦使用 ID，每层所有构件都必须提供唯一且一致的 ID 集合。当前 `rigid_floor_shear_3d` OpenSees backend 假定层间抗侧构件沿高度保持相同平面位置，因此相邻楼层同一构件的归一化 `x/y` 坐标必须一致。
+
+二维模型使用独立的 OpenSees 表示：
+
+- `euler_beam_2d`：`elasticBeamColumn -cMass`
+- `rayleigh_beam_2d`：`elasticBeamColumn -cMass` 加节点转动质量
+- `timoshenko_beam_2d`：`ElasticTimoshenkoBeam -cMass`
+- `shear_flexure_building_2d`：`elasticBeamColumn -cMass` 与水平 `twoNodeLink` 并联
+
+二维模型的 OpenSees 后端使用与 Direct 一致的等效基底惯性荷载进行水平地面输入，并将 OpenSees `Rz` 映射为项目约定的 `Theta` 符号。
 
 ## 单向层剪切模型
 
@@ -119,6 +157,89 @@ qrest_model/
 
 - `direct_shear`：显式组装一维 `M/C/K` 并使用 Newmark 积分
 - `opensees_shear`：使用 OpenSeesPy 的一维节点和 `zeroLength` 弹簧
+
+## 二维梁与弯剪模型
+
+Stage 2 新增的二维模型每层使用两个自由度：
+
+```text
+U, Theta
+```
+
+其中 `U` 是水平相对位移，`Theta` 是弯曲转角。示例配置位于：
+
+```text
+beam2d/configs/euler_3story.json
+beam2d/configs/rayleigh_3story.json
+beam2d/configs/timoshenko_3story.json
+beam2d/configs/shear_flexure_3story.json
+```
+
+Euler、Rayleigh 和 Timoshenko 使用 `section_defaults` 与 `sections` 描述逐层等效截面：
+
+```json
+{
+  "model": {
+    "type": "euler_beam_2d",
+    "num_stories": 3,
+    "dof_per_floor": ["U", "Theta"]
+  },
+  "geometry": {
+    "story_heights": [3.0, 3.0, 3.0]
+  },
+  "section_defaults": {
+    "E": 30000000000.0,
+    "A": 20.0,
+    "I": 90.0,
+    "density": 2500.0
+  },
+  "sections": [
+    {"story": 1},
+    {"story": 2},
+    {"story": 3}
+  ]
+}
+```
+
+模型差异集中在 theory 层：
+
+- Euler：Euler-Bernoulli 弯曲刚度与 consistent beam mass。
+- Rayleigh：Euler 刚度与质量基础上增加节点 `rotational_inertia`。
+- Timoshenko：使用 `G` 和 `shear_area` 定义剪切刚度，质量矩阵包含平动 consistent mass 与截面 rotary inertia。
+- Shear-Flexure：Euler 弯曲分支与层间水平 `shear_stiffness` 并联。
+
+Shear-Flexure 配置使用 `story_defaults`/`stories` 描述剪切分支，可在每层覆盖 `flexural_section`：
+
+```json
+{
+  "model": {
+    "type": "shear_flexure_building_2d",
+    "num_stories": 3,
+    "dof_per_floor": ["U", "Theta"]
+  },
+  "section_defaults": {
+    "E": 30000000000.0,
+    "A": 20.0,
+    "I": 90.0,
+    "density": 2500.0
+  },
+  "story_defaults": {
+    "shear_stiffness": 800000000.0
+  },
+  "stories": [
+    {"story": 1},
+    {"story": 2, "flexural_section": {"I": 80.0}},
+    {"story": 3, "shear_stiffness": 900000000.0}
+  ]
+}
+```
+
+统一 CLI 可直接运行这些配置：
+
+```bash
+.venv/bin/python -m qrest_model.cli run beam2d/configs/timoshenko_3story.json --backend direct
+.venv/bin/python -m qrest_model.cli run beam2d/configs/shear_flexure_3story.json --backend opensees
+```
 
 ## Python API
 
@@ -226,6 +347,13 @@ OpenSees 后端：
 ```
 
 ### 后端对比
+
+推荐使用统一 CLI 对比任意模型：
+
+```bash
+.venv/bin/python -m qrest_model.cli validate beam2d/configs/euler_3story.json --backend-a direct --backend-b opensees
+.venv/bin/python -m qrest_model.cli validate beam2d/configs/shear_flexure_3story.json --backend-a direct --backend-b opensees
+```
 
 当一个 case 目录下同时存在 `direct_stiffness` 和 `opensees_story` 子目录时，可运行：
 
@@ -431,7 +559,7 @@ metadata.txt
 
 ### `master_response.csv`
 
-每一行对应一个时间步和一个楼层主节点：
+每一行对应一个时间步和一个楼层主节点。三自由度刚性楼板模型字段为：
 
 ```text
 time, story, node_or_sensor_id,
@@ -446,9 +574,19 @@ abs_ux, abs_uy, abs_rz, abs_vx, abs_vy, abs_vrz, abs_ax, abs_ay, abs_arz
 
 地面位移和速度由输入地面加速度按梯形积分得到，初始地面位移和速度取 0。
 
+二维 `beam2d` 模型字段为：
+
+```text
+time, story, node_or_sensor_id,
+u, theta, v, vtheta, a, atheta,
+abs_u, abs_theta, abs_v, abs_vtheta, abs_a, abs_atheta
+```
+
+其中 `u/v/a` 是水平平动响应，`theta/vtheta/atheta` 是弯曲转角响应；绝对响应只对水平平动叠加地面运动。
+
 ### `sensor_response.csv`
 
-每一行对应一个时间步和一个测点。直接刚度后端的测点响应由刚性楼板公式从楼层主自由度映射得到：
+每一行对应一个时间步和一个测点。三自由度直接刚度后端的测点响应由刚性楼板公式从楼层主自由度映射得到：
 
 ```text
 u(x, y) = Ux - y * Rz
@@ -468,12 +606,14 @@ value, relative_value
 
 `value` 是按测点 `direction` 和 `quantity` 投影后的绝对标量响应；`relative_value` 保留对应的相对响应。
 
+二维模型的传感器字段使用 `dof` 代替 `direction`，支持 `U` 与 `Theta`，其余响应语义保持一致。
+
 ### 矩阵和参数文件
 
 - `mass_matrix.txt`：总体质量矩阵 `M`
 - `stiffness_matrix.txt`：总体刚度矩阵 `K`
 - `damping_matrix.txt`：Rayleigh 阻尼矩阵 `C = alpha M + beta K`
-- `story_stiffness_theory.txt`：逐层 3x3 理论层刚度表
+- `story_stiffness_theory.txt`：逐层理论刚度或截面/分支参数表
 - `metadata.txt`：后端名称、响应定义、Rayleigh 阻尼系数等
 
 矩阵文件使用逗号分隔，方便用 `numpy.loadtxt(path, delimiter=",")` 读取。
@@ -583,6 +723,9 @@ n_steps = round(duration / dt) + 1
 - 偏心结构能激发扭转响应
 - 测点刚性楼板映射公式
 - 对称构件布置的层刚度矩阵耦合项
+- Euler、Rayleigh、Timoshenko 和 Shear-Flexure 的单元矩阵、装配矩阵和模型分发
+- Rayleigh → Euler、Timoshenko → Euler、Shear-Flexure → Flexure 的物理极限
+- 新增二维模型的 Direct 与 OpenSees 后端逐点对照
 - story/global 刚度正定性与 Rayleigh 参考频率重频保护
 - dataset/exporter/CLI 生成链路和 golden regression signatures
 
@@ -594,4 +737,6 @@ QREST_RUN_OPENSEES_TESTS=1 .venv/bin/python -m pytest -m opensees
 
 ## 已知说明
 
-OpenSees 后端使用 `UniformExcitation`，输出为 OpenSees 节点相对响应；直接刚度后端也输出相对楼层响应，并在内存结果中保留平动绝对位移、速度和加速度。两种方法在线弹性、小时间步下响应趋势和峰值时刻应保持一致，但由于 OpenSees 内部时程分析、约束处理和阻尼实现与直接矩阵积分并非完全同一路径，逐点误差不一定为零。
+三自由度刚性楼板 OpenSees 后端使用 `UniformExcitation`，输出为 OpenSees 节点相对响应；直接刚度后端也输出相对楼层响应，并在内存结果中保留平动绝对位移、速度和加速度。两种方法在线弹性、小时间步下响应趋势和峰值时刻应保持一致，但由于 OpenSees 内部时程分析、约束处理和阻尼实现与直接矩阵积分并非完全同一路径，逐点误差不一定为零。
+
+二维 beam2d 模型的 OpenSees 后端使用与 Direct 质量矩阵对应的等效基底惯性荷载输入，并通过测试比较频率、相对位移、速度、加速度和绝对加速度。Shear-Flexure 的 `twoNodeLink` 水平弹簧显式指定 local x 方向，因此 OpenSees 会打印 “ignoring nodes and using specified local x vector to determine orientation” 的提示；这是预期行为，不影响数值对照。

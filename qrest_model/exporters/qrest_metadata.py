@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from qrest_model.schema import normalize_geometry
+
 
 def build_qrest_metadata(
     config: dict[str, Any],
@@ -25,10 +27,14 @@ def build_qrest_metadata(
     if npts is None:
         npts = int(round(float(ground_motion.get("duration", 0.0)) / dt)) + 1
 
-    elevations = [
-        base_elevation + story_height * story_index
-        for story_index in range(num_stories)
-    ]
+    geometry_raw = config.get("geometry", {})
+    if not geometry_raw and (story_height != 3.0 or base_elevation != 0.0):
+        geometry_raw = {
+            "story_heights": [story_height for _ in range(num_stories)],
+            "base_elevation": base_elevation,
+        }
+    geometry = normalize_geometry(geometry_raw, num_stories)
+    elevations = list(geometry.elevations)
     footprint = _structural_footprint(config)
     channels = _channels(config.get("sensors", []), elevations)
 

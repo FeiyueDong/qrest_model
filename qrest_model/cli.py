@@ -7,10 +7,18 @@ from pathlib import Path
 from typing import Sequence
 
 from qrest_model.backends import run_analysis
-from qrest_model.backends.base import RIGID_FLOOR_SHEAR_3D, SHEAR_BUILDING_1D, dispatch_model_case
+from qrest_model.backends.base import (
+    EULER_BEAM_2D,
+    RAYLEIGH_BEAM_2D,
+    RIGID_FLOOR_SHEAR_3D,
+    SHEAR_FLEXURE_BUILDING_2D,
+    SHEAR_BUILDING_1D,
+    TIMOSHENKO_BEAM_2D,
+    dispatch_model_case,
+)
 from qrest_model.common.compare import compare_master_arrays
 from qrest_model.datasets import DATASET_CONFIG_ROOT, MODEL_ROOT, generate_all
-from qrest_model.exporters.backend_outputs import write_shear_outputs, write_story3d_outputs
+from qrest_model.exporters.backend_outputs import write_beam2d_outputs, write_shear_outputs, write_story3d_outputs
 from qrest_model.exporters.qrest_dataset import (
     DEFAULT_CONFIG_SOURCE,
     DEFAULT_OUTPUT_ROOT,
@@ -67,8 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _run_command(args: argparse.Namespace) -> int:
     result = run_analysis(args.case, backend=args.backend)
     output = Path(args.output) if args.output else _default_run_output(args.case, args.backend)
-    if _case_model_type(args.case) == SHEAR_BUILDING_1D:
+    model_type = _case_model_type(args.case)
+    if model_type == SHEAR_BUILDING_1D:
         write_shear_outputs(result, output)
+    elif model_type in {EULER_BEAM_2D, RAYLEIGH_BEAM_2D, TIMOSHENKO_BEAM_2D, SHEAR_FLEXURE_BUILDING_2D}:
+        write_beam2d_outputs(result, output)
     else:
         stiffness_key = "stiffness_matrix_theory" if result.metadata.backend == "opensees_story" else "stiffness_matrix"
         write_story3d_outputs(result, output, stiffness_key=stiffness_key)
@@ -110,20 +121,53 @@ def _export_qrest_command(args: argparse.Namespace) -> int:
 
 def _default_run_output(case: str | Path, backend: str) -> Path:
     case_path = Path(case)
-    family = "shear1d" if _case_model_type(case) == SHEAR_BUILDING_1D else "story3d"
+    model_type = _case_model_type(case)
+    if model_type == SHEAR_BUILDING_1D:
+        family = "shear1d"
+    elif model_type in {EULER_BEAM_2D, RAYLEIGH_BEAM_2D, TIMOSHENKO_BEAM_2D, SHEAR_FLEXURE_BUILDING_2D}:
+        family = "beam2d"
+    else:
+        family = "story3d"
     return MODEL_ROOT / "output" / family / case_path.stem / _backend_output_name(case, backend)
 
 
 def _backend_output_name(case: str | Path, backend: str) -> str:
     model_type = _case_model_type(case)
     if backend == "opensees":
-        return "opensees_shear" if model_type == SHEAR_BUILDING_1D else "opensees_story"
-    return "direct_shear" if model_type == SHEAR_BUILDING_1D else "direct_stiffness"
+        if model_type == SHEAR_BUILDING_1D:
+            return "opensees_shear"
+        if model_type == EULER_BEAM_2D:
+            return "opensees_euler"
+        if model_type == RAYLEIGH_BEAM_2D:
+            return "opensees_rayleigh"
+        if model_type == TIMOSHENKO_BEAM_2D:
+            return "opensees_timoshenko"
+        if model_type == SHEAR_FLEXURE_BUILDING_2D:
+            return "opensees_shear_flexure"
+        return "opensees_story"
+    if model_type == SHEAR_BUILDING_1D:
+        return "direct_shear"
+    if model_type == EULER_BEAM_2D:
+        return "direct_euler"
+    if model_type == RAYLEIGH_BEAM_2D:
+        return "direct_rayleigh"
+    if model_type == TIMOSHENKO_BEAM_2D:
+        return "direct_timoshenko"
+    if model_type == SHEAR_FLEXURE_BUILDING_2D:
+        return "direct_shear_flexure"
+    return "direct_stiffness"
 
 
 def _case_model_type(case: str | Path) -> str:
     model_type, _payload = dispatch_model_case(case)
-    if model_type not in {SHEAR_BUILDING_1D, RIGID_FLOOR_SHEAR_3D}:
+    if model_type not in {
+        SHEAR_BUILDING_1D,
+        RIGID_FLOOR_SHEAR_3D,
+        EULER_BEAM_2D,
+        RAYLEIGH_BEAM_2D,
+        TIMOSHENKO_BEAM_2D,
+        SHEAR_FLEXURE_BUILDING_2D,
+    }:
         raise ValueError(f"Unsupported model.type: {model_type}")
     return model_type
 

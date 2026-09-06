@@ -1,0 +1,41 @@
+{
+  "schema_version": "2.0",
+  "model": {
+    "type": "rayleigh_beam_2d",
+    "num_stories": 3,
+    "dof_per_floor": ["U", "Theta"]
+  },
+  "geometry": {
+    "story_heights": [3.0, 3.0, 3.0]
+  },
+  "section_defaults": {
+    "E": 30000000000.0,
+    "A": 20.0,
+    "I": 90.0,
+    "density": 2500.0,
+    "rotational_inertia": 200000.0
+  },
+  "sections": [
+    {"story": 1},
+    {"story": 2},
+    {"story": 3}
+  ],
+  "sensors": [
+    {"id": "roof_u", "story": 3, "dof": "U", "quantity": "accel"},
+    {"id": "roof_theta", "story": 3, "dof": "Theta", "quantity": "disp"}
+  ],
+  "damping": {
+    "type": "rayleigh",
+    "zeta": 0.02,
+    "modes": [1, 2]
+  },
+  "ground_motion": {
+    "dt": 0.01,
+    "duration": 0.1,
+    "synthetic": {
+      "amplitude_x": 0.1,
+      "amplitude_y": 0.0,
+      "frequency_x": 1.0
+    }
+  }
+}

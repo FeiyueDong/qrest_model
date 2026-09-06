@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import warnings
 
 import numpy as np
 
@@ -103,6 +104,12 @@ def solve_newmark(
     beta: float = 0.25,
     gamma: float = 0.5,
 ) -> dict[str, np.ndarray]:
+    warnings.warn(
+        "qrest_model.backends.direct_shear.solve_newmark is deprecated; "
+        "use qrest_model.backends.direct_linear.run_linear_direct through run_result instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     n = mass.shape[0]
     system = LinearSystem(
         mass=mass,

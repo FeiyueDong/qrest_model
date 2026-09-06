@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import warnings
 
 import numpy as np
 
@@ -114,6 +115,12 @@ def solve_newmark(
     beta: float = 0.25,
     gamma: float = 0.5,
 ) -> dict[str, Any]:
+    warnings.warn(
+        "qrest_model.backends.direct_stiffness.solve_newmark is deprecated; "
+        "use qrest_model.backends.direct_linear.run_linear_direct through run_result instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     n_steps = time.size
     ux_influence = np.tile(np.array([1.0, 0.0, 0.0]), num_stories)
     uy_influence = np.tile(np.array([0.0, 1.0, 0.0]), num_stories)

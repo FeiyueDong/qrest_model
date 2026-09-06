@@ -60,6 +60,22 @@ def add_absolute_shear_response(
     response["absolute_acceleration"] = response["acceleration"] + ground["acceleration"][:, ground_index, None]
 
 
+def add_absolute_beam_response(
+    response: dict,
+    ground_ax: np.ndarray,
+    ground_ay: np.ndarray,
+) -> None:
+    ground = ground_kinematics(response["time"], ground_ax, ground_ay)
+    response["ground_displacement"] = ground["displacement"]
+    response["ground_velocity"] = ground["velocity"]
+    response["ground_acceleration"] = ground["acceleration"]
+    response["ground_displacement_source"] = "integrated_from_acceleration"
+    response["ground_velocity_source"] = "integrated_from_acceleration"
+    response["absolute_displacement"] = _add_ground_to_beam_u(response["displacement"], ground["displacement"][:, 0])
+    response["absolute_velocity"] = _add_ground_to_beam_u(response["velocity"], ground["velocity"][:, 0])
+    response["absolute_acceleration"] = _add_ground_to_beam_u(response["acceleration"], ground["acceleration"][:, 0])
+
+
 def _integrate_trapezoid(time: np.ndarray, values: np.ndarray) -> np.ndarray:
     integrated = np.zeros_like(values, dtype=float)
     for i in range(1, values.size):
@@ -72,4 +88,10 @@ def _add_ground(response: np.ndarray, ground_xy: np.ndarray) -> np.ndarray:
     absolute = response.copy()
     absolute[:, :, 0] += ground_xy[:, 0, None]
     absolute[:, :, 1] += ground_xy[:, 1, None]
+    return absolute
+
+
+def _add_ground_to_beam_u(response: np.ndarray, ground_u: np.ndarray) -> np.ndarray:
+    absolute = response.copy()
+    absolute[:, :, 0] += ground_u[:, None]
     return absolute
