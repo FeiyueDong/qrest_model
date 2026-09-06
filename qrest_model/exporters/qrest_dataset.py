@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from qrest_model.exporters.qrest_metadata import build_qrest_metadata
 
 MODEL_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_SOURCE = None
@@ -24,6 +25,8 @@ def export_dataset(
     target_dir = Path(output_dir)
     metadata_path = case_dir / "metadata.json"
     acceleration_path = case_dir / "time_history" / "acceleration.csv"
+    if _is_research_dataset(case_dir):
+        return export_research_dataset(case_dir, target_dir, config_source=config_source)
     if not metadata_path.exists():
         raise FileNotFoundError(f"Missing generated metadata: {metadata_path}")
     if not acceleration_path.exists():
@@ -55,14 +58,18 @@ def export_dataset(
 
 def discover_generated_cases(input_root: str | Path) -> list[Path]:
     root = Path(input_root)
+    if _is_research_dataset(root):
+        return [root]
     if (root / "metadata.json").exists() and (root / "time_history" / "acceleration.csv").exists():
         return [root]
     return sorted(
         path
         for path in root.iterdir()
         if path.is_dir()
-        and (path / "metadata.json").exists()
-        and (path / "time_history" / "acceleration.csv").exists()
+        and (
+            ((path / "metadata.json").exists() and (path / "time_history" / "acceleration.csv").exists())
+            or _is_research_dataset(path)
+        )
     )
 
 
@@ -80,6 +87,52 @@ def export_generated_cases(
         export_dataset(case, output_base / case.name, config_source=config_source)
         for case in cases
     ]
+
+
+def export_research_dataset(
+    input_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    config_source: str | Path | None = DEFAULT_CONFIG_SOURCE,
+) -> Path:
+    case_dir = Path(input_dir)
+    target_dir = Path(output_dir)
+    manifest = json.loads((case_dir / "manifest.json").read_text(encoding="utf-8"))
+    observation = json.loads((case_dir / "metadata" / "observation.json").read_text(encoding="utf-8"))
+    config = json.loads((case_dir / "config.json").read_text(encoding="utf-8"))
+    physical_files = observation.get("files", {}).get("physical", {})
+    acceleration_relative = physical_files.get("acceleration")
+    if acceleration_relative is None:
+        raise ValueError("Research qREST export currently requires physical acceleration observations.")
+    acceleration_path = case_dir / "observations" / str(acceleration_relative)
+    channel_ids = [
+        str(channel["id"])
+        for channel in observation.get("channels", [])
+        if channel.get("kind") == "physical" and channel.get("quantity") == "acceleration"
+    ]
+    rows = _read_acceleration_rows(acceleration_path, channel_ids)
+    metadata = build_qrest_metadata(
+        config,
+        npts=len(rows),
+        project_name=f"qREST_Model_{manifest['name']}",
+        event_name=f"MODEL_{str(manifest['name']).upper()}",
+    )
+    if _metadata_channel_ids(metadata) != channel_ids:
+        raise ValueError("Research qREST export metadata channel order does not match physical observations.")
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dataset_name = target_dir.name
+    (target_dir / f"{dataset_name}_metadata.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    _write_text_matrix(target_dir / f"{dataset_name}_data.txt", rows)
+
+    source = Path(config_source) if config_source is not None else case_dir / "config"
+    if source.exists():
+        shutil.copytree(source, target_dir / "config", dirs_exist_ok=True)
+
+    return target_dir
 
 
 def _metadata_channel_ids(metadata: dict[str, Any]) -> list[str]:
@@ -121,10 +174,23 @@ def _write_text_matrix(path: Path, rows: list[list[str]]) -> None:
             handle.write("\n")
 
 
+def _is_research_dataset(path: Path) -> bool:
+    manifest_path = path / "manifest.json"
+    metadata_dir = path / "metadata"
+    if not manifest_path.exists() or not metadata_dir.exists():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    return manifest.get("dataset_type") == "research"
+
+
 __all__ = [
     "DEFAULT_CONFIG_SOURCE",
     "DEFAULT_OUTPUT_ROOT",
     "discover_generated_cases",
     "export_dataset",
     "export_generated_cases",
+    "export_research_dataset",
 ]

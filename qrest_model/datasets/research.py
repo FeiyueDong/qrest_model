@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from qrest_model.backends import run_analysis
 from qrest_model.common.io import ensure_output_dir
 from qrest_model.datasets.cases import RESEARCH_CONFIG_ROOT, DatasetCase, load_dataset_case, research_cases
+from qrest_model.datasets.observations import apply_observation_config
 from qrest_model.exporters.research_dataset import write_research_dataset
 
 
@@ -21,12 +22,13 @@ def generate_research_dataset(
     backend: str = "direct",
 ) -> Path:
     dataset_name, config, metadata = _load_case_payload(case, name)
+    runtime_config = apply_observation_config(config, metadata["observation_config"])
     output = reset_output_dir(output_dir)
-    result = run_analysis(config, backend=backend)
+    result = run_analysis(runtime_config, backend=backend)
     return write_research_dataset(
         output,
         name=dataset_name,
-        config=config,
+        config=runtime_config,
         result=result,
         backend=backend,
         truth_policy=metadata["truth_policy"],
@@ -160,9 +162,10 @@ def _dataset_index_entry(output_root: Path, dataset_path: Path) -> dict[str, Any
         "model_type": str(manifest["model_type"]),
         "backend": str(manifest["backend"]),
         "config_hash_sha256": str(manifest["config_hash_sha256"]),
+        "model_config_hash_sha256": str(manifest.get("model_config_hash_sha256", manifest["config_hash_sha256"])),
+        "dataset_config_hash_sha256": str(manifest.get("dataset_config_hash_sha256", manifest["config_hash_sha256"])),
         "research": manifest.get("research", {}),
-        "noise": {
-            "configured": bool(manifest.get("noise_config", {})),
+        "noise": manifest.get("noise", {"configured": bool(manifest.get("noise_config", {}))}) | {
             "config": manifest.get("noise_config", {}),
         },
         "content_summary": manifest.get("content_summary", {}),

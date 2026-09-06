@@ -125,7 +125,7 @@ Direct 后端使用 NumPy 显式组装总体质量矩阵 `M`、刚度矩阵 `K` 
 - `timoshenko_beam_2d`：`ElasticTimoshenkoBeam -cMass`
 - `shear_flexure_building_2d`：`elasticBeamColumn -cMass` 与水平 `twoNodeLink` 并联
 
-二维模型的 OpenSees 后端使用与 Direct 一致的等效基底惯性荷载进行水平地面输入，并将 OpenSees `Rz` 映射为项目约定的 `Theta` 符号。Stage 3 另有专用 imposed support motion 集成验证，用 OpenSees `MultipleSupport`/`imposedMotion` 对比 Direct 等效惯性输入；该验证路径不替换现有 backend。
+二维模型的 OpenSees 后端使用与 Direct 一致的等效基底惯性荷载进行水平地面输入，并将 OpenSees `Rz` 映射为项目约定的 `Theta` 符号。Stage 3 另有专用 imposed support motion 集成验证，用 OpenSees `MultipleSupport`/`imposedMotion` 对比 Direct 等效惯性输入；该验证路径不替换现有 backend。当前独立验证覆盖 shear building 和 Euler beam，其中 Euler case 用于检查 consistent mass 与 base excitation coupling。
 
 ## 单向层剪切模型
 
@@ -551,6 +551,8 @@ xmake run example_rr_pymethod resource/test_output/generated_datasets/two_x_one_
 
 Stage 3 新增 research dataset 出口，用于同时保存完整结构真值、physical observation 和 virtual probe。它与 qREST text dataset 分离：research dataset 面向算法研究和真值验证，qREST dataset 面向模拟真实监测数据。
 
+Stage 3/3.5 已完成收口，完整阶段记录见 `docs/history/stage3_completion_qrest_model.md`。
+
 生成单个研究数据集：
 
 ```bash
@@ -570,7 +572,7 @@ qrest-model generate-research-cases --case mbi_timoshenko_3story_sparse --valida
 output/research_datasets/<case-name>/
 ```
 
-批量生成时，`output/research_datasets/manifest.json` 是集合级索引；每个子目录仍保留自己的 `manifest.json`。集合索引按 case name 排序，汇总 `research` 标签、truth 尺寸、physical/virtual observation 数量、derived quantity、稳定配置哈希和噪声配置状态。当前第一批 benchmark 不注入噪声，因此集合索引中的 `noise.configured` 为 `false`。
+批量生成时，`output/research_datasets/manifest.json` 是集合级索引；每个子目录仍保留自己的 `manifest.json`。集合索引按 case name 排序，汇总 `research` 标签、truth 尺寸、physical/virtual observation 数量、derived quantity、稳定配置哈希和噪声配置状态。内置 small regression benchmark 默认不启用噪声，因此集合索引中的 `noise.configured` 为 `false`；若 research case 显式配置 `noise.enabled: true`，则输出 measured physical observation 与 clean reference。
 
 目录结构为：
 
@@ -589,19 +591,24 @@ observations/
     acceleration.csv
     velocity.csv
     displacement.csv
+  physical_clean/
+    acceleration.csv
+    velocity.csv
+    displacement.csv
   virtual/
     acceleration.csv
     velocity.csv
     displacement.csv
 metadata/
   derived.json
+  noise.json
   observation.json
   provenance.json
 ```
 
-`truth/response.npz` 保存完整 `relative/absolute/ground` 时程；`truth/matrices.npz` 保存 `M/K/C` 和 DOF 标签；`truth/modal.npz` 保存真实频率、周期和质量归一化振型。`derived/structural.npz` 保存由 truth 计算得到的派生结构量，当前包括平动层间位移差、层间位移角和 beam-like 模型的层间转角差，并在 `metadata/derived.json` 记录单位、shape 和来源。`observations/physical` 只保存 physical sensor 通道，`observations/virtual` 保存研究用 virtual probe。`metadata/observation.json` 为每个 channel 保存 observation operator，research validator 会检查 operator 结构、frame、quantity、story、DOF 和系数合法性。单个 dataset 的 `manifest.json` 带有 `content_summary`，用于快速读取 time steps、DOF 数、observation 数量、observation quantity 和 derived quantity ID。`manifest.json` 和 `metadata/provenance.json` 使用稳定配置哈希，不写生成时间戳，因此同一 config/backend 生成结果可复现。
+`truth/response.npz` 保存完整 `relative/absolute/ground` 时程；`truth/matrices.npz` 保存 `M/K/C` 和 DOF 标签；`truth/modal.npz` 保存真实频率、周期和质量归一化振型。`truth/structural_properties.json` 记录 modal truth 的质量归一化、振型符号约定和 DOF 单位。`derived/structural.npz` 保存由 truth 计算得到的派生结构量，当前包括平动层间位移差、层间位移角和 beam-like 模型的层间转角差，并在 `metadata/derived.json` 记录单位、shape 和来源。`observations/physical` 保存 physical sensor 通道；无噪声时它是 clean observation，有噪声时它是 measured/noisy observation，同时 `observations/physical_clean` 保存 clean reference。`observations/virtual` 保存研究用 virtual probe，噪声不会作用于 virtual probe。`metadata/noise.json` 记录 Gaussian white noise 的 seed、target、std_ratio 和每个 physical channel 的信号/噪声统计。`metadata/observation.json` 为每个 channel 保存 observation operator，research validator 会检查 operator 结构、frame、quantity、story、DOF 和系数合法性。单个 dataset 的 `manifest.json` 带有 `content_summary`，用于快速读取 time steps、DOF 数、observation 数量、observation quantity 和 derived quantity ID。`model_config_hash_sha256` 只标识结构模型，`dataset_config_hash_sha256` 同时包含 observation/noise/research metadata；manifest 和 provenance 不写生成时间戳，因此同一 config/backend/seed 生成结果可复现。`qrest-model export-qrest` 可直接读取 research dataset；它导出 `observations/physical`，因此噪声启用时 qREST text dataset 使用 measured physical observation，而不是 `physical_clean`。
 
-`config/research/` 当前提供 9 个小规模 deterministic benchmark，覆盖所有 schema model family，并满足 Stage 3 第一批 OMA/MBI 族类覆盖：
+`config/research/` 当前提供 9 个小规模 deterministic regression benchmark 和 2 个 research-scale benchmark，覆盖所有 schema model family，并满足 Stage 3 第一批 OMA/MBI 族类覆盖：
 
 ```text
 oma_shear_3story                    shear_building_1d，OMA 用全楼层 X 加速度
@@ -613,9 +620,11 @@ mbi_rigid_3story_sparse             rigid_floor_shear_3d，稀疏 X/Y 加速度�
 mbi_rayleigh_3story_sparse          rayleigh_beam_2d，稀疏 U 加速度与 Theta virtual probe
 mbi_timoshenko_3story_sparse        timoshenko_beam_2d，稀疏 U 加速度与 Theta virtual probe
 mbi_shear_flexure_3story_sparse     shear_flexure_building_2d，稀疏 U 加速度与 Theta virtual probe
+oma_shear_12story_research          shear_building_1d，research-scale OMA，全楼层 X 加速度，多频确定性输入
+mbi_timoshenko_16story_research     timoshenko_beam_2d，research-scale MBI，5 层 U 加速度与 2 个 Theta virtual probe
 ```
 
-这些 benchmark 的单个 `manifest.json` 会保留 `truth_policy`、`observation_config`、`noise_config`、`export_policy` 和 `research` 元数据；批量根目录的集合索引会把这些 case 摘要汇总到一个稳定 JSON 中，便于后续 OMA、mode completion 和 model-based identification 流程按研究任务筛选。
+这些 benchmark 的单个 `manifest.json` 会保留 `truth_policy`、`observation_config`、`noise_config`、`export_policy` 和 `research` 元数据；批量根目录的集合索引会把这些 case 摘要汇总到一个稳定 JSON 中，便于后续 OMA、mode completion 和 model-based identification 流程按研究任务筛选。`config/research` 中的布局以顶层 `observations` 为唯一事实来源；`model_config.sensors` 仅作为普通模型配置和旧输入兼容路径保留。
 
 ## 官方批量测试工况
 

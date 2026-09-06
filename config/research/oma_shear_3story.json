@@ -6,7 +6,8 @@
   "research": {
     "task": "oma",
     "family": "shear",
-    "sensor_density": "full"
+    "sensor_density": "full",
+    "scale": "small_regression"
   },
   "truth_policy": {
     "include_full_response": true,
@@ -37,11 +38,6 @@
       {"story": 1, "stiffness": 800000000.0},
       {"story": 2, "stiffness": 700000000.0},
       {"story": 3, "stiffness": 600000000.0}
-    ],
-    "sensors": [
-      {"id": "01f_x", "story": 1, "quantity": "accel"},
-      {"id": "02f_x", "story": 2, "quantity": "accel"},
-      {"id": "03f_x", "story": 3, "quantity": "accel"}
     ],
     "damping": {
       "type": "rayleigh",

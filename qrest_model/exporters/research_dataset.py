@@ -10,10 +10,11 @@ from typing import Any
 
 import numpy as np
 
-from qrest_model.analysis.result import AnalysisResult, ObservationChannel
+from qrest_model.analysis.result import AnalysisResult, ObservationChannel, ObservationResult
 from qrest_model.common.io import ensure_output_dir
 from qrest_model.exporters.derived_quantities import write_derived_quantities
 from qrest_model.exporters.model_truth import write_model_truth
+from qrest_model.noise import apply_observation_noise, normalize_noise_config
 
 
 def write_research_dataset(
@@ -36,8 +37,32 @@ def write_research_dataset(
     )
     truth_summary = write_model_truth(output / "truth", result, config)
     derived_metadata = write_derived_quantities(output / "derived", result, config)
-    observation_files = write_observation_tables(output / "observations", result)
-    observation_metadata = build_observation_metadata(result, observation_files)
+    normalized_noise = normalize_noise_config(noise_config)
+    if normalized_noise.enabled:
+        if result.observations is None:
+            raise ValueError("Noise requires observations.")
+        clean_files = write_observation_tables(
+            output / "observations",
+            result,
+            outputs=(("physical", "physical_clean"), ("virtual", "virtual")),
+        )
+        noisy_observations, noise_metadata = apply_observation_noise(result.observations, normalized_noise)
+        noisy_files = write_observation_tables(
+            output / "observations",
+            result,
+            observations=noisy_observations,
+            outputs=(("physical", "physical"),),
+        )
+        observation_files = {
+            "physical": noisy_files["physical"],
+            "physical_clean": clean_files["physical_clean"],
+            "virtual": clean_files["virtual"],
+        }
+        observation_metadata = build_observation_metadata(noisy_observations, observation_files)
+    else:
+        observation_files = write_observation_tables(output / "observations", result)
+        observation_metadata = build_observation_metadata(result.observations, observation_files)
+        noise_metadata = normalized_noise.to_dict() | {"channels": []}
     metadata_dir = ensure_output_dir(output / "metadata")
     (metadata_dir / "observation.json").write_text(
         json.dumps(observation_metadata, indent=2, ensure_ascii=False) + "\n",
@@ -45,6 +70,10 @@ def write_research_dataset(
     )
     (metadata_dir / "derived.json").write_text(
         json.dumps(derived_metadata, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (metadata_dir / "noise.json").write_text(
+        json.dumps(noise_metadata, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     provenance = build_research_provenance(
@@ -70,9 +99,21 @@ def write_research_dataset(
         "backend": backend,
         "deterministic": True,
         "config_hash_sha256": provenance["config_hash_sha256"],
+        "model_config_hash_sha256": provenance["model_config_hash_sha256"],
+        "dataset_config_hash_sha256": provenance["dataset_config_hash_sha256"],
         "truth_policy": truth_policy or {},
         "observation_config": observation_config or {},
         "noise_config": noise_config or {},
+        "noise": {
+            "configured": normalized_noise.enabled,
+            "seed": normalized_noise.seed,
+            "type": normalized_noise.noise_type if normalized_noise.enabled else "none",
+            "target": normalized_noise.target,
+            "level": {
+                "mode": normalized_noise.level_mode,
+                "value": normalized_noise.level_value,
+            },
+        },
         "export_policy": export_policy or {},
         "research": research or {},
         "truth": {"directory": "truth", **truth_summary["files"]},
@@ -85,6 +126,7 @@ def write_research_dataset(
         ),
         "metadata": {
             "derived": "metadata/derived.json",
+            "noise": "metadata/noise.json",
             "observation": "metadata/observation.json",
             "provenance": "metadata/provenance.json",
         },
@@ -96,16 +138,22 @@ def write_research_dataset(
     return output
 
 
-def write_observation_tables(output_dir: str | Path, result: AnalysisResult) -> dict[str, dict[str, str]]:
+def write_observation_tables(
+    output_dir: str | Path,
+    result: AnalysisResult,
+    *,
+    observations: ObservationResult | None = None,
+    outputs: tuple[tuple[str, str], ...] = (("physical", "physical"), ("virtual", "virtual")),
+) -> dict[str, dict[str, str]]:
     output = ensure_output_dir(output_dir)
-    ensure_output_dir(output / "physical")
-    ensure_output_dir(output / "virtual")
-    observations = result.observations
+    for _kind, output_kind in outputs:
+        ensure_output_dir(output / output_kind)
+    observations = result.observations if observations is None else observations
     if observations is None or not observations.channels:
-        return {"physical": {}, "virtual": {}}
+        return {output_kind: {} for _kind, output_kind in outputs}
 
-    files: dict[str, dict[str, str]] = {"physical": {}, "virtual": {}}
-    for kind in ("physical", "virtual"):
+    files: dict[str, dict[str, str]] = {output_kind: {} for _kind, output_kind in outputs}
+    for kind, output_kind in outputs:
         channel_indices = [
             (index, channel)
             for index, channel in enumerate(observations.channels)
@@ -120,14 +168,13 @@ def write_observation_tables(output_dir: str | Path, result: AnalysisResult) -> 
             ]
             if not selected:
                 continue
-            relative_path = Path(kind) / f"{quantity}.csv"
+            relative_path = Path(output_kind) / f"{quantity}.csv"
             _write_wide_observation_csv(output / relative_path, result.time, selected)
-            files[kind][quantity] = str(relative_path)
+            files[output_kind][quantity] = str(relative_path)
     return files
 
 
-def build_observation_metadata(result: AnalysisResult, files: dict[str, dict[str, str]]) -> dict[str, Any]:
-    observations = result.observations
+def build_observation_metadata(observations: ObservationResult | None, files: dict[str, dict[str, str]]) -> dict[str, Any]:
     channels = [] if observations is None else [channel.to_dict() for channel in observations.channels]
     physical = [channel for channel in channels if channel["kind"] == "physical"]
     virtual = [channel for channel in channels if channel["kind"] == "virtual"]
@@ -182,6 +229,15 @@ def build_research_provenance(
         "analysis_backend": result.metadata.backend,
         "model_type": str(config.get("model", {}).get("type", metadata.get("model_type", ""))),
         "config_hash_sha256": stable_config_hash(config),
+        "model_config_hash_sha256": stable_config_hash(config),
+        "dataset_config_hash_sha256": stable_dataset_config_hash(
+            config=config,
+            truth_policy=truth_policy,
+            observation_config=observation_config,
+            noise_config=noise_config,
+            export_policy=export_policy,
+            research=research,
+        ),
         "random_seed": None,
         "deterministic": True,
         "truth_policy": truth_policy or {},
@@ -194,7 +250,38 @@ def build_research_provenance(
 
 
 def stable_config_hash(config: dict[str, Any]) -> str:
-    payload = json.dumps(config, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return stable_json_hash(structural_model_config(config))
+
+
+def stable_dataset_config_hash(
+    *,
+    config: dict[str, Any],
+    truth_policy: dict[str, Any] | None = None,
+    observation_config: dict[str, Any] | None = None,
+    noise_config: dict[str, Any] | None = None,
+    export_policy: dict[str, Any] | None = None,
+    research: dict[str, Any] | None = None,
+) -> str:
+    return stable_json_hash(
+        {
+            "model_config": structural_model_config(config),
+            "truth_policy": truth_policy or {},
+            "observation_config": observation_config or {},
+            "noise_config": noise_config or {},
+            "export_policy": export_policy or {},
+            "research": research or {},
+        }
+    )
+
+
+def structural_model_config(config: dict[str, Any]) -> dict[str, Any]:
+    structural = json.loads(json.dumps(config, ensure_ascii=False))
+    structural.pop("sensors", None)
+    return structural
+
+
+def stable_json_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 

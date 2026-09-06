@@ -7,6 +7,7 @@ from qrest_model.exporters.qrest_dataset import (
     discover_generated_cases,
     export_dataset,
     export_generated_cases,
+    export_research_dataset,
 )
 from qrest_model.exporters.model_truth import truth_dof_labels, write_model_truth
 from qrest_model.exporters.qrest_metadata import (
@@ -38,6 +39,7 @@ __all__ = [
     "discover_generated_cases",
     "export_dataset",
     "export_generated_cases",
+    "export_research_dataset",
     "write_algorithm_configs",
     "write_algorithm_configs_for_root",
     "write_qrest_metadata",

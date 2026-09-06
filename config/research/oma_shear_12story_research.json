@@ -1,0 +1,72 @@
+{
+  "name": "oma_shear_12story_research",
+  "data_type": "research",
+  "model_type": "shear_building_1d",
+  "description": "Research-scale deterministic shear OMA baseline with full-floor physical acceleration observations and multi-sine excitation.",
+  "research": {
+    "task": "oma",
+    "family": "shear",
+    "sensor_density": "full",
+    "scale": "research_scale",
+    "benchmark_role": "oma_baseline"
+  },
+  "truth_policy": {
+    "include_full_response": true,
+    "include_modal": true,
+    "include_matrices": true
+  },
+  "observations": {
+    "physical": {
+      "stories": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "directions": ["X"],
+      "quantity": "acceleration"
+    }
+  },
+  "model_config": {
+    "schema_version": "2.0",
+    "model": {
+      "type": "shear_building_1d",
+      "num_stories": 12,
+      "dof_per_floor": ["Ux"]
+    },
+    "geometry": {
+      "story_heights": [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+    },
+    "floor_defaults": {
+      "mass": 1000000.0
+    },
+    "stories": [
+      {"story": 1, "stiffness": 900000000.0},
+      {"story": 2, "stiffness": 880000000.0},
+      {"story": 3, "stiffness": 860000000.0},
+      {"story": 4, "stiffness": 840000000.0},
+      {"story": 5, "stiffness": 820000000.0},
+      {"story": 6, "stiffness": 800000000.0},
+      {"story": 7, "stiffness": 760000000.0},
+      {"story": 8, "stiffness": 720000000.0},
+      {"story": 9, "stiffness": 680000000.0},
+      {"story": 10, "stiffness": 640000000.0},
+      {"story": 11, "stiffness": 600000000.0},
+      {"story": 12, "stiffness": 560000000.0}
+    ],
+    "damping": {
+      "type": "rayleigh",
+      "zeta": 0.02,
+      "modes": [1, 3]
+    },
+    "ground_motion": {
+      "dt": 0.01,
+      "duration": 5.0,
+      "synthetic": {
+        "decay": 0.03,
+        "components_x": [
+          {"amplitude": 0.08, "frequency": 0.7},
+          {"amplitude": 0.05, "frequency": 1.4, "phase": 0.6},
+          {"amplitude": 0.035, "frequency": 2.3, "phase": 1.1},
+          {"amplitude": 0.02, "frequency": 3.6, "phase": 1.7}
+        ],
+        "amplitude_y": 0.0
+      }
+    }
+  }
+}

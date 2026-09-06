@@ -110,6 +110,13 @@ def _truth_summary(result: AnalysisResult, config: dict[str, Any], dof_labels: l
         "response_shape": list(result.relative.displacement.shape),
         "dof_count": int(result.mass_matrix.shape[0]),
         "dof_labels": dof_labels,
+        "dof_units": truth_dof_units(dof_labels),
+        "modal_metadata": {
+            "mode_shape_normalization": "mass_normalized",
+            "mode_shape_normalization_equation": "phi.T @ M @ phi = I",
+            "mode_shape_sign_convention": "largest_abs_component_positive",
+            "dof_units": truth_dof_units(dof_labels),
+        },
         "matrix_source": metadata.get("matrix_source"),
         "modal_source": metadata.get("modal_source"),
         "response_source": metadata.get("response_source"),
@@ -122,4 +129,15 @@ def _truth_summary(result: AnalysisResult, config: dict[str, Any], dof_labels: l
     }
 
 
-__all__ = ["truth_dof_labels", "write_model_truth"]
+def truth_dof_units(dof_labels: list[str]) -> dict[str, str]:
+    return {label: _dof_unit(label) for label in dof_labels}
+
+
+def _dof_unit(label: str) -> str:
+    component = label.rsplit("_", 1)[-1].lower()
+    if component in {"theta", "rz"}:
+        return "rad"
+    return "m"
+
+
+__all__ = ["truth_dof_labels", "truth_dof_units", "write_model_truth"]

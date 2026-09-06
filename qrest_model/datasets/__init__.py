@@ -11,6 +11,7 @@ from qrest_model.datasets.cases import (
     research_cases,
 )
 from qrest_model.datasets.generator import generate_all, generate_case
+from qrest_model.datasets.observations import apply_observation_config, observation_sensors
 from qrest_model.datasets.research import (
     build_research_dataset_index,
     generate_research_cases,
@@ -29,6 +30,7 @@ __all__ = [
     "DATASET_CONFIG_ROOT",
     "MODEL_ROOT",
     "RESEARCH_CONFIG_ROOT",
+    "apply_observation_config",
     "build_research_dataset_index",
     "dataset_cases",
     "generate_all",
@@ -36,6 +38,7 @@ __all__ = [
     "generate_research_cases",
     "generate_research_dataset",
     "load_dataset_case",
+    "observation_sensors",
     "research_cases",
     "validate_opensees_sensor_nodes",
     "validate_research_dataset",

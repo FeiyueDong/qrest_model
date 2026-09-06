@@ -58,12 +58,41 @@ def _load_component(path: str | None, base_dir: Path, time: np.ndarray, dt: floa
 
 
 def _synthetic_motion(time: np.ndarray, raw: dict) -> tuple[np.ndarray, np.ndarray]:
-    amplitude_x = float(raw.get("amplitude_x", 0.15))
-    amplitude_y = float(raw.get("amplitude_y", 0.08))
-    freq_x = float(raw.get("frequency_x", 1.2))
-    freq_y = float(raw.get("frequency_y", 0.8))
     decay = float(raw.get("decay", 0.08))
     envelope = np.exp(-decay * time) * (1.0 - np.exp(-3.0 * time))
-    ax = amplitude_x * envelope * np.sin(2.0 * np.pi * freq_x * time)
-    ay = amplitude_y * envelope * np.sin(2.0 * np.pi * freq_y * time + 0.35)
+    ax = envelope * _synthetic_component(
+        time,
+        raw.get("components_x"),
+        amplitude=float(raw.get("amplitude_x", 0.15)),
+        frequency=float(raw.get("frequency_x", 1.2)),
+        phase=float(raw.get("phase_x", 0.0)),
+    )
+    ay = envelope * _synthetic_component(
+        time,
+        raw.get("components_y"),
+        amplitude=float(raw.get("amplitude_y", 0.08)),
+        frequency=float(raw.get("frequency_y", 0.8)),
+        phase=float(raw.get("phase_y", 0.35)),
+    )
     return ax, ay
+
+
+def _synthetic_component(
+    time: np.ndarray,
+    components: list[dict] | None,
+    *,
+    amplitude: float,
+    frequency: float,
+    phase: float,
+) -> np.ndarray:
+    if components is None:
+        return amplitude * np.sin(2.0 * np.pi * frequency * time + phase)
+    values = np.zeros_like(time)
+    for index, component in enumerate(components):
+        values += float(component.get("amplitude", 0.0)) * np.sin(
+            2.0 * np.pi * float(component["frequency"]) * time
+            + float(component.get("phase", 0.0))
+        )
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"synthetic component {index} produced non-finite ground motion.")
+    return values

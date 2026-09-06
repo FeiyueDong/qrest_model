@@ -1,0 +1,87 @@
+{
+  "name": "mbi_timoshenko_16story_research",
+  "data_type": "research",
+  "model_type": "timoshenko_beam_2d",
+  "description": "Research-scale deterministic Timoshenko MBI baseline with sparse U acceleration observations and retained Theta virtual probes.",
+  "research": {
+    "task": "mode_completion",
+    "family": "timoshenko",
+    "sensor_density": "medium",
+    "scale": "research_scale",
+    "benchmark_role": "mbi_baseline",
+    "mismatch_candidate": "euler_beam_2d"
+  },
+  "truth_policy": {
+    "include_full_response": true,
+    "include_modal": true,
+    "include_matrices": true
+  },
+  "observations": {
+    "physical": {
+      "stories": [1, 4, 8, 12, 16],
+      "dofs": ["U"],
+      "quantity": "acceleration"
+    },
+    "virtual": {
+      "stories": [8, 16],
+      "dofs": ["Theta"],
+      "quantity": "displacement"
+    }
+  },
+  "model_config": {
+    "schema_version": "2.0",
+    "model": {
+      "type": "timoshenko_beam_2d",
+      "num_stories": 16,
+      "dof_per_floor": ["U", "Theta"]
+    },
+    "geometry": {
+      "story_heights": [3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2, 3.2]
+    },
+    "section_defaults": {
+      "E": 30000000000.0,
+      "G": 12500000000.0,
+      "A": 22.0,
+      "shear_area": 17.6,
+      "I": 120.0,
+      "density": 2500.0
+    },
+    "sections": [
+      {"story": 1, "I": 130.0},
+      {"story": 2, "I": 127.0},
+      {"story": 3, "I": 124.0},
+      {"story": 4, "I": 121.0},
+      {"story": 5, "I": 118.0},
+      {"story": 6, "I": 115.0},
+      {"story": 7, "I": 112.0},
+      {"story": 8, "I": 109.0},
+      {"story": 9, "I": 104.0},
+      {"story": 10, "I": 99.0},
+      {"story": 11, "I": 94.0},
+      {"story": 12, "I": 89.0},
+      {"story": 13, "I": 84.0},
+      {"story": 14, "I": 79.0},
+      {"story": 15, "I": 74.0},
+      {"story": 16, "I": 69.0}
+    ],
+    "damping": {
+      "type": "rayleigh",
+      "zeta": 0.02,
+      "modes": [1, 3]
+    },
+    "ground_motion": {
+      "dt": 0.01,
+      "duration": 5.0,
+      "synthetic": {
+        "decay": 0.03,
+        "components_x": [
+          {"amplitude": 0.08, "frequency": 0.55},
+          {"amplitude": 0.045, "frequency": 1.15, "phase": 0.4},
+          {"amplitude": 0.03, "frequency": 2.1, "phase": 1.0},
+          {"amplitude": 0.018, "frequency": 3.4, "phase": 1.6}
+        ],
+        "amplitude_y": 0.0
+      }
+    }
+  }
+}

@@ -86,10 +86,12 @@ def validate_research_dataset(dataset_dir: str | Path) -> dict[str, Any]:
     manifest = _read_json(root / "manifest.json")
     observation_metadata = _read_json(root / "metadata" / "observation.json")
     provenance = _read_json(root / "metadata" / "provenance.json")
+    noise_metadata = _read_json(root / "metadata" / "noise.json")
     _validate_manifest(root, manifest, provenance)
     time = _validate_truth(root)
     _validate_derived(root, manifest, time)
     _validate_observations(root, observation_metadata, time)
+    _validate_noise(manifest, observation_metadata, noise_metadata)
     _validate_content_summary(manifest, observation_metadata, time)
     return {
         "name": manifest["name"],
@@ -138,6 +140,10 @@ def _validate_manifest(root: Path, manifest: dict[str, Any], provenance: dict[st
         raise ValueError("Research dataset manifest dataset_type must be 'research'.")
     if manifest["config_hash_sha256"] != provenance.get("config_hash_sha256"):
         raise ValueError("Research dataset config hash differs between manifest and provenance.")
+    if manifest.get("model_config_hash_sha256") != provenance.get("model_config_hash_sha256"):
+        raise ValueError("Research dataset model config hash differs between manifest and provenance.")
+    if manifest.get("dataset_config_hash_sha256") != provenance.get("dataset_config_hash_sha256"):
+        raise ValueError("Research dataset dataset config hash differs between manifest and provenance.")
     for required in (
         root / "config.json",
         root / "truth" / "response.npz",
@@ -146,6 +152,7 @@ def _validate_manifest(root: Path, manifest: dict[str, Any], provenance: dict[st
         root / "truth" / "structural_properties.json",
         root / "derived" / "structural.npz",
         root / "metadata" / "derived.json",
+        root / "metadata" / "noise.json",
         root / "metadata" / "observation.json",
         root / "metadata" / "provenance.json",
     ):
@@ -173,7 +180,28 @@ def _validate_truth(root: Path) -> np.ndarray:
                 raise ValueError(f"Research truth {name} must be square.")
             if not np.all(np.isfinite(matrix)):
                 raise ValueError(f"Research truth {name} must be finite.")
+    _validate_modal_truth_metadata(_read_json(root / "truth" / "structural_properties.json"))
     return time
+
+
+def _validate_modal_truth_metadata(structural: dict[str, Any]) -> None:
+    dof_labels = structural.get("dof_labels", [])
+    dof_units = structural.get("dof_units", {})
+    if not isinstance(dof_units, dict):
+        raise ValueError("Research truth dof_units must be a mapping.")
+    if set(dof_units) != set(dof_labels):
+        raise ValueError("Research truth dof_units must cover all DOF labels.")
+    for label, unit in dof_units.items():
+        expected = "rad" if str(label).rsplit("_", 1)[-1].lower() in {"theta", "rz"} else "m"
+        if unit != expected:
+            raise ValueError(f"Research truth DOF {label} must use unit {expected}.")
+    modal = structural.get("modal_metadata")
+    if not isinstance(modal, dict):
+        raise ValueError("Research truth is missing modal_metadata.")
+    if modal.get("mode_shape_normalization") != "mass_normalized":
+        raise ValueError("Research truth modal normalization must be mass_normalized.")
+    if modal.get("mode_shape_sign_convention") != "largest_abs_component_positive":
+        raise ValueError("Research truth modal sign convention must be largest_abs_component_positive.")
 
 
 def _validate_derived(root: Path, manifest: dict[str, Any], time: np.ndarray) -> None:
@@ -222,8 +250,9 @@ def _validate_observations(root: Path, metadata: dict[str, Any], time: np.ndarra
             raise ValueError(f"Observation {channel.get('id')} is missing unit.")
         _validate_observation_operator(channel)
     for kind, quantity_files in metadata.get("files", {}).items():
+        channel_kind = "physical" if kind == "physical_clean" else kind
         for quantity, relative_path in quantity_files.items():
-            _validate_observation_csv(root / "observations" / relative_path, time, channels, kind, quantity)
+            _validate_observation_csv(root / "observations" / relative_path, time, channels, channel_kind, quantity)
 
 
 def _validate_observation_operator(channel: dict[str, Any]) -> None:
@@ -293,6 +322,40 @@ def _validate_content_summary(
         raise ValueError("Research dataset content_summary virtual_channel_count does not match observations.")
 
 
+def _validate_noise(
+    manifest: dict[str, Any],
+    observation_metadata: dict[str, Any],
+    noise_metadata: dict[str, Any],
+) -> None:
+    noise = manifest.get("noise")
+    if not isinstance(noise, dict):
+        raise ValueError("Research dataset manifest is missing noise metadata.")
+    enabled = bool(noise.get("configured", False))
+    if enabled != bool(noise_metadata.get("enabled", False)):
+        raise ValueError("Research dataset noise enabled state differs between manifest and metadata.")
+    files = observation_metadata.get("files", {})
+    if enabled:
+        if "physical_clean" not in files:
+            raise ValueError("Noisy research dataset must include physical_clean observations.")
+        if noise_metadata.get("type") != "gaussian_white":
+            raise ValueError("Noisy research dataset must use gaussian_white metadata.")
+        if noise_metadata.get("target") != "physical":
+            raise ValueError("Noisy research dataset noise target must be physical.")
+        channels = noise_metadata.get("channels", [])
+        if len(channels) != int(observation_metadata.get("physical_channel_count", 0)):
+            raise ValueError("Noise metadata channel count must match physical observations.")
+        for channel in channels:
+            for key in ("id", "signal_std", "target_noise_std", "realized_noise_std"):
+                if key not in channel:
+                    raise ValueError(f"Noise metadata channel is missing {key}.")
+            for key in ("signal_std", "target_noise_std", "realized_noise_std"):
+                value = float(channel[key])
+                if not np.isfinite(value) or value < 0.0:
+                    raise ValueError(f"Noise metadata {key} must be finite and non-negative.")
+    elif "physical_clean" in files:
+        raise ValueError("Noise-free research dataset must not include physical_clean observations.")
+
+
 def _validate_collection_entry(
     entry: dict[str, Any],
     manifest: dict[str, Any],
@@ -300,10 +363,27 @@ def _validate_collection_entry(
     derived: dict[str, Any],
     summary: dict[str, Any],
 ) -> None:
-    for key in ("name", "path", "dataset_type", "model_type", "backend", "config_hash_sha256"):
+    for key in (
+        "name",
+        "path",
+        "dataset_type",
+        "model_type",
+        "backend",
+        "config_hash_sha256",
+        "model_config_hash_sha256",
+        "dataset_config_hash_sha256",
+    ):
         if key not in entry:
             raise ValueError(f"Research dataset collection entry is missing {key}.")
-    for key in ("name", "dataset_type", "model_type", "backend", "config_hash_sha256"):
+    for key in (
+        "name",
+        "dataset_type",
+        "model_type",
+        "backend",
+        "config_hash_sha256",
+        "model_config_hash_sha256",
+        "dataset_config_hash_sha256",
+    ):
         if entry[key] != manifest[key]:
             raise ValueError(f"Research dataset collection entry {entry['name']} has inconsistent {key}.")
     content_summary = entry.get("content_summary")
