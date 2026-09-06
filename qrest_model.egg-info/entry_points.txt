@@ -1,6 +1,0 @@
-[console_scripts]
-qrest-model = qrest_model.cli:main
-qrest-model-build-datasets = scripts.build_datasets:main
-qrest-model-export-datasets = scripts.export_datasets:main
-qrest-model-make-metadata = scripts.make_metadata:main
-qrest-model-map-sensors = scripts.map_sensors:main

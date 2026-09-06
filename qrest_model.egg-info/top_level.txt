@@ -1,2 +1,0 @@
-qrest_model
-scripts
