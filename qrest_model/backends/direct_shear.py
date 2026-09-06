@@ -13,10 +13,12 @@ from qrest_model.backends.direct_linear import run_linear_direct
 from qrest_model.analysis.linear_system import LinearSystem
 from qrest_model.analysis.newmark import NewmarkSolver
 from qrest_model.common.ground_motion import load_ground_motion
+from qrest_model.common.provenance import direct_provenance
 from qrest_model.common.response import add_absolute_shear_response
 from qrest_model.schema import ShearModelConfig, load_shear_config
 from qrest_model.exporters.backend_outputs import write_shear_outputs
 from qrest_model.models.shear_building import ShearBuildingModel
+from qrest_model.observations.shear import build_shear_sensor_result, build_shear_sensor_rows
 from qrest_model.theory.shear_stiffness import (
     shear_story_stiffness_table,
 )
@@ -85,7 +87,7 @@ def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
             ),
             rayleigh_alpha=linear.rayleigh_alpha,
             rayleigh_beta=linear.rayleigh_beta,
-            extras={
+            extras=direct_provenance() | {
                 "direction": model_config.direction,
                 "ground_displacement_source": response["ground_displacement_source"],
                 "ground_velocity_source": response["ground_velocity_source"],
@@ -127,60 +129,11 @@ def solve_newmark(
 
 
 def build_sensor_result(config: ShearModelConfig, result: dict[str, np.ndarray]) -> SensorResult:
-    displacement = tuple(result["displacement"][:, sensor.story - 1] for sensor in config.sensors)
-    velocity = tuple(result["velocity"][:, sensor.story - 1] for sensor in config.sensors)
-    acceleration = tuple(result["acceleration"][:, sensor.story - 1] for sensor in config.sensors)
-    absolute_displacement = tuple(result["absolute_displacement"][:, sensor.story - 1] for sensor in config.sensors)
-    absolute_velocity = tuple(result["absolute_velocity"][:, sensor.story - 1] for sensor in config.sensors)
-    absolute_acceleration = tuple(result["absolute_acceleration"][:, sensor.story - 1] for sensor in config.sensors)
-    return SensorResult(
-        rows=build_sensor_rows(config, result),
-        displacement=displacement,
-        velocity=velocity,
-        acceleration=acceleration,
-        absolute_displacement=absolute_displacement,
-        absolute_velocity=absolute_velocity,
-        absolute_acceleration=absolute_acceleration,
-    )
+    return build_shear_sensor_result(config.sensors, result, direction=config.direction)
 
 
 def build_sensor_rows(config: ShearModelConfig, result: dict[str, np.ndarray]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for sensor in config.sensors:
-        story_index = sensor.story - 1
-        for step, t in enumerate(result["time"]):
-            disp = result["displacement"][step, story_index]
-            vel = result["velocity"][step, story_index]
-            acc = result["acceleration"][step, story_index]
-            abs_disp = result["absolute_displacement"][step, story_index]
-            abs_vel = result["absolute_velocity"][step, story_index]
-            abs_acc = result["absolute_acceleration"][step, story_index]
-            rows.append(
-                {
-                    "time": t,
-                    "story": sensor.story,
-                    "node_or_sensor_id": sensor.sensor_id,
-                    "direction": config.direction,
-                    "quantity": sensor.quantity,
-                    "u": disp,
-                    "v": vel,
-                    "a": acc,
-                    "abs_u": abs_disp,
-                    "abs_v": abs_vel,
-                    "abs_a": abs_acc,
-                    "value": _project(sensor.quantity, abs_disp, abs_vel, abs_acc),
-                    "relative_value": _project(sensor.quantity, disp, vel, acc),
-                }
-            )
-    return rows
-
-
-def _project(quantity: str, disp: float, vel: float, acc: float) -> float:
-    if quantity in {"disp", "displacement"}:
-        return float(disp)
-    if quantity in {"vel", "velocity"}:
-        return float(vel)
-    return float(acc)
+    return build_shear_sensor_rows(config.sensors, result, direction=config.direction)
 
 
 def write_outputs(result: AnalysisResult | dict[str, Any], output_dir: str | Path) -> None:

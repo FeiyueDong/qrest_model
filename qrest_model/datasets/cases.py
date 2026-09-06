@@ -3,19 +3,36 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from qrest_model.schema import (
+    EULER_BEAM_2D,
+    RAYLEIGH_BEAM_2D,
     RIGID_FLOOR_SHEAR_3D,
     SCHEMA_VERSION,
+    SHEAR_FLEXURE_BUILDING_2D,
     SHEAR_BUILDING_1D,
+    TIMOSHENKO_BEAM_2D,
 )
 
 MODEL_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_ROOT = MODEL_ROOT / "config"
 DATASET_CONFIG_ROOT = CONFIG_ROOT / "datasets"
+RESEARCH_CONFIG_ROOT = CONFIG_ROOT / "research"
+SCHEMA_MODEL_TYPES = {
+    RIGID_FLOOR_SHEAR_3D,
+    SHEAR_BUILDING_1D,
+    EULER_BEAM_2D,
+    RAYLEIGH_BEAM_2D,
+    TIMOSHENKO_BEAM_2D,
+    SHEAR_FLEXURE_BUILDING_2D,
+}
+MODEL_TYPE_ALIASES = {
+    "story3d": RIGID_FLOOR_SHEAR_3D,
+    "shear1d": SHEAR_BUILDING_1D,
+}
 
 
 @dataclass(frozen=True)
@@ -26,6 +43,11 @@ class DatasetCase:
     config: dict[str, Any]
     description: str
     z_channel: bool = False
+    truth_policy: dict[str, Any] = field(default_factory=dict)
+    observation_config: dict[str, Any] = field(default_factory=dict)
+    noise_config: dict[str, Any] = field(default_factory=dict)
+    export_policy: dict[str, Any] = field(default_factory=dict)
+    research: dict[str, Any] = field(default_factory=dict)
 
 
 def dataset_cases(config_root: str | Path = DATASET_CONFIG_ROOT) -> tuple[DatasetCase, ...]:
@@ -36,26 +58,37 @@ def dataset_cases(config_root: str | Path = DATASET_CONFIG_ROOT) -> tuple[Datase
     return tuple(load_dataset_case(path) for path in config_paths)
 
 
+def research_cases(config_root: str | Path = RESEARCH_CONFIG_ROOT) -> tuple[DatasetCase, ...]:
+    return dataset_cases(config_root)
+
+
 def load_dataset_case(config_path: str | Path) -> DatasetCase:
     path = Path(config_path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     model_config = raw.get("model_config")
     if model_config is None:
         model_config = expand_model_config(raw, path.parent)
+    else:
+        model_config = resolve_model_config_paths(dict(model_config), path.parent)
     return DatasetCase(
         name=str(raw["name"]),
         data_type=str(raw["data_type"]),
-        model_type=str(raw["model_type"]),
+        model_type=schema_model_type(str(raw["model_type"])),
         config=model_config,
         description=str(raw.get("description", "")),
         z_channel=bool(raw.get("z_channel", False)),
+        truth_policy=dict(raw.get("truth_policy", {})),
+        observation_config=dict(raw.get("observations", raw.get("observation_config", {}))),
+        noise_config=dict(raw.get("noise", raw.get("noise_config", {}))),
+        export_policy=dict(raw.get("export_policy", {})),
+        research=dict(raw.get("research", {})),
     )
 
 
 def expand_model_config(raw: dict[str, Any], config_dir: Path) -> dict[str, Any]:
-    model_type = str(raw["model_type"])
+    model_type = schema_model_type(str(raw["model_type"]))
     model = dict(raw["model"])
-    model.setdefault("type", schema_model_type(model_type))
+    model.setdefault("type", model_type)
     floor_defaults = expand_floor_defaults(dict(raw.get("floor_defaults", {})), model_type)
     stories = expand_stories(
         raw.get("stories", {"range": [1, int(model["num_stories"])]}),
@@ -76,17 +109,17 @@ def expand_model_config(raw: dict[str, Any], config_dir: Path) -> dict[str, Any]
 
 
 def schema_model_type(model_type: str) -> str:
-    if model_type == "story3d":
-        return RIGID_FLOOR_SHEAR_3D
-    if model_type == "shear1d":
-        return SHEAR_BUILDING_1D
+    if model_type in MODEL_TYPE_ALIASES:
+        return MODEL_TYPE_ALIASES[model_type]
+    if model_type in SCHEMA_MODEL_TYPES:
+        return model_type
     raise ValueError(f"Unsupported dataset model_type: {model_type}")
 
 
 def expand_floor_defaults(raw: dict[str, Any], model_type: str) -> dict[str, Any]:
     floor_defaults = dict(raw)
     layout = floor_defaults.pop("element_layout", None)
-    if model_type == "story3d" and layout:
+    if model_type == RIGID_FLOOR_SHEAR_3D and layout:
         if layout != "symmetric_four_corner":
             raise ValueError(f"Unsupported element_layout: {layout}")
         footprint = floor_defaults.pop("footprint", {"x": [-5.0, 5.0], "y": [-3.0, 3.0]})
@@ -109,7 +142,7 @@ def expand_stories(raw: Any, floor_defaults: dict[str, Any], model_type: str) ->
         raise ValueError("stories must be a list or {'range': [first, last]}")
     first, last = raw["range"]
     stories = [{"story": story} for story in range(int(first), int(last) + 1)]
-    if model_type == "shear1d" and "stiffness" in floor_defaults:
+    if model_type == SHEAR_BUILDING_1D and "stiffness" in floor_defaults:
         stiffness = float(floor_defaults.pop("stiffness"))
         for row in stories:
             row["stiffness"] = stiffness
@@ -181,6 +214,13 @@ def resolve_ground_motion_paths(raw: dict[str, Any], config_dir: Path) -> dict[s
         if value:
             ground_motion[key] = resolve_config_path(str(value), config_dir)
     return ground_motion
+
+
+def resolve_model_config_paths(model_config: dict[str, Any], config_dir: Path) -> dict[str, Any]:
+    resolved = dict(model_config)
+    if "ground_motion" in resolved:
+        resolved["ground_motion"] = resolve_ground_motion_paths(dict(resolved["ground_motion"]), config_dir)
+    return resolved
 
 
 def resolve_config_path(value: str, config_dir: Path) -> str:

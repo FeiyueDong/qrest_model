@@ -8,12 +8,13 @@ from typing import Any
 import numpy as np
 
 from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory
-from qrest_model.backends.direct_euler import build_sensor_result
 from qrest_model.backends.direct_linear import run_linear_direct
 from qrest_model.common.ground_motion import load_ground_motion
+from qrest_model.common.provenance import direct_provenance
 from qrest_model.common.response import add_absolute_beam_response
 from qrest_model.exporters.backend_outputs import write_beam2d_outputs
 from qrest_model.models.timoshenko_beam import TimoshenkoBeam2DModel
+from qrest_model.observations.beam import build_beam_sensor_result
 from qrest_model.schema import TimoshenkoBeamModelConfig, load_timoshenko_config
 
 
@@ -66,7 +67,7 @@ def run_result(config: TimoshenkoBeamModelConfig | str | Path) -> AnalysisResult
             velocity=response["ground_velocity"],
             acceleration=response["ground_acceleration"],
         ),
-        sensors=build_sensor_result(model_config, response),
+        sensors=build_beam_sensor_result(model_config.sensors, response),
         mass_matrix=linear.mass_matrix,
         stiffness_matrix=linear.stiffness_matrix,
         damping_matrix=linear.damping_matrix,
@@ -79,7 +80,7 @@ def run_result(config: TimoshenkoBeamModelConfig | str | Path) -> AnalysisResult
             ),
             rayleigh_alpha=linear.rayleigh_alpha,
             rayleigh_beta=linear.rayleigh_beta,
-            extras={
+            extras=direct_provenance() | {
                 "model_type": model_config.model_type,
                 "dof_per_floor": list(model_config.dof_per_floor),
                 "geometry": {

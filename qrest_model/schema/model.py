@@ -22,6 +22,7 @@ from qrest_model.schema.case import (
     StoryConfig,
     TimoshenkoBeamModelConfig,
 )
+from qrest_model.schema.observation import ObservationConfig, PhysicalObservationConfig, VirtualProbeConfig
 
 __all__ = [
     "EULER_BEAM_2D",
@@ -44,4 +45,7 @@ __all__ = [
     "ShearStoryConfig",
     "StoryConfig",
     "TimoshenkoBeamModelConfig",
+    "ObservationConfig",
+    "PhysicalObservationConfig",
+    "VirtualProbeConfig",
 ]

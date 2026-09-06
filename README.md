@@ -16,7 +16,7 @@
 - `rigid_floor_shear_3d`：三自由度刚性楼板剪切模型
 - `shear_building_1d`：单向层剪切模型
 - `euler_beam_2d`：Euler-Bernoulli 二维弯曲梁模型
-- `rayleigh_beam_2d`：在 Euler 刚度基础上增加节点转动惯量的 Rayleigh 梁模型
+- `rayleigh_beam_2d`：离散 Rayleigh-type beam，在 Euler 刚度与 consistent mass 基础上增加节点/楼层集中转动惯量
 - `timoshenko_beam_2d`：包含弯曲和剪切变形的 Timoshenko 梁模型
 - `shear_flexure_building_2d`：Euler 弯曲分支与层间剪切分支并联的弯剪建筑模型
 
@@ -50,6 +50,7 @@ output/                          多模型族默认输出，默认被 git 忽略
 input/                           多模型共用的外部激励文件
 config/
   datasets/                      批量生成测试数据的工况配置
+  research/                      Stage 3 研究数据集 benchmark 配置
 scripts/                         数据集生成、测点映射、元信息和导出入口
   build_datasets.py
   map_sensors.py
@@ -63,6 +64,7 @@ qrest_model/
   datasets/                      官方工况定义、生成流程和验证工具
   exporters/                     后端输出、时程、结构属性和 qREST 文本数据集导出
   models/                        结构物理模型对象
+  observations/                  单向剪切和二维 beam 模型观测映射
   postprocess/                   测点刚性楼板映射
   theory/                        层刚度、梁单元和弯剪模型理论公式
   backends/
@@ -123,7 +125,7 @@ Direct 后端使用 NumPy 显式组装总体质量矩阵 `M`、刚度矩阵 `K` 
 - `timoshenko_beam_2d`：`ElasticTimoshenkoBeam -cMass`
 - `shear_flexure_building_2d`：`elasticBeamColumn -cMass` 与水平 `twoNodeLink` 并联
 
-二维模型的 OpenSees 后端使用与 Direct 一致的等效基底惯性荷载进行水平地面输入，并将 OpenSees `Rz` 映射为项目约定的 `Theta` 符号。
+二维模型的 OpenSees 后端使用与 Direct 一致的等效基底惯性荷载进行水平地面输入，并将 OpenSees `Rz` 映射为项目约定的 `Theta` 符号。Stage 3 另有专用 imposed support motion 集成验证，用 OpenSees `MultipleSupport`/`imposedMotion` 对比 Direct 等效惯性输入；该验证路径不替换现有 backend。
 
 ## 单向层剪切模型
 
@@ -204,7 +206,7 @@ Euler、Rayleigh 和 Timoshenko 使用 `section_defaults` 与 `sections` 描述�
 模型差异集中在 theory 层：
 
 - Euler：Euler-Bernoulli 弯曲刚度与 consistent beam mass。
-- Rayleigh：Euler 刚度与质量基础上增加节点 `rotational_inertia`。
+- Rayleigh：离散 Rayleigh-type beam，在 Euler 刚度与 consistent mass 基础上增加节点/楼层集中 `rotational_inertia`；它不是严格连续分布的 Rayleigh 梁单元实现。
 - Timoshenko：使用 `G` 和 `shear_area` 定义剪切刚度，质量矩阵包含平动 consistent mass 与截面 rotary inertia。
 - Shear-Flexure：Euler 弯曲分支与层间水平 `shear_stiffness` 并联。
 
@@ -252,7 +254,29 @@ result = run_analysis("story3d/configs/default_10story.json", backend="direct")
 print(result.relative.acceleration.shape)
 ```
 
-`AnalysisResult` 将相对响应、绝对响应、地面运动、传感器结果、质量/刚度/阻尼矩阵、模态结果和 metadata 分开保存。所有模型统一约定：`relative` 是结构相对地面响应，`ground` 是输入地面运动，`absolute` 是平动自由度叠加地面运动后的响应；旋转自由度不叠加地面平动。传感器 `value` 表示绝对响应，`relative_value` 表示相对响应。现阶段 backend 仍保留旧 dict 输出，以便已有脚本继续运行；内部 `run_result()` 和统一 `run_analysis()` 已优先返回结构化结果。
+`AnalysisResult` 将相对响应、绝对响应、地面运动、观测结果、质量/刚度/阻尼矩阵、模态结果和 metadata 分开保存。所有模型统一约定：`relative` 是结构相对地面响应，`ground` 是输入地面运动，`absolute` 是平动自由度叠加地面运动后的响应；旋转自由度在当前纯平动地面输入下不叠加地面运动。传感器 `value` 表示绝对响应，`relative_value` 表示相对响应。metadata 中的 `matrix_source`、`modal_source` 和 `response_source` 明确记录矩阵、模态和时程响应来源；OpenSees 后端的 `mass_matrix/stiffness_matrix/damping_matrix/modal` 来自 qrest_model 理论矩阵，并额外记录 `backend_modal_source: opensees_eigen`。现阶段 backend 仍保留旧 dict 输出，以便已有脚本继续运行；内部 `run_result()` 和统一 `run_analysis()` 已优先返回结构化结果。
+
+## 观测语义
+
+Stage 3 起，qREST Model 明确区分：
+
+- Structural Truth：模型完整状态，例如刚性楼板 `Ux/Uy/Rz` 或 beam-like 模型 `U/Theta`。
+- Derived Structural Quantity：由结构状态计算得到的派生结构量，后续用于 drift、curvature、shear deformation 等扩展。
+- Observation：从结构状态映射得到的可用数据，分为 physical sensor 和 virtual probe。
+
+`AnalysisResult.observations` 是新的观测结果入口；`AnalysisResult.sensors` 仍保留为兼容别名。每个 observation channel 记录 `kind`、`quantity`、`unit`、来源信息和 `operator`。`operator` 当前表示线性观测算子，用 `terms` 明确通道如何由 structural truth 的响应分量组合得到，例如刚性楼板 X 向偏置测点会记录 `Ux - y Rz`。当前规则为：
+
+- 刚性楼板 X/Y 偏置测点是 physical translational observation，虽然映射中使用 `Rz`。
+- 单向剪切模型测点是 physical translational observation。
+- beam-like 模型 `U` 测点是 physical translational observation。
+- beam-like 模型 `Theta` 和刚性楼板 `Rz` 是 structural truth 中的广义转角，可作为 virtual probe 输出，但不默认进入 qREST physical Instrument channel。
+
+旧 `sensors` 配置仍兼容。若旧 beam 配置写了 `dof: "Theta"` 且未声明 `kind`，归一化时会将其视为 `kind: "virtual"`；若显式声明 `kind: "physical"` 又使用 `Theta` 或 `Rz`，配置会被拒绝。qREST metadata/export 默认只使用 physical observation，virtual probe 不会被伪装为 X/Y/Z 物理通道。
+
+单位语义随观测类型区分：
+
+- 平动位移、速度、加速度：`m`、`m/s`、`m/s^2`
+- 转角位移、速度、加速度：`rad`、`rad/s`、`rad/s^2`
 
 旧的脚本级 backend 函数仍返回兼容 dict：
 
@@ -271,6 +295,8 @@ qrest-model run story3d/configs/default_10story.json --backend direct
 qrest-model validate story3d/configs/default_10story.json --backend-a direct --backend-b opensees --abs-tol 1e-10 --rel-tol 1e-8
 qrest-model generate-datasets --case two_x_one_y_torsion
 qrest-model export-qrest --input output/test_datasets
+qrest-model generate-research beam2d/configs/euler_3story.json --validate
+qrest-model generate-research-cases --case oma_shear_3story --validate
 ```
 
 未安装时可使用等价模块入口：
@@ -521,7 +547,79 @@ PyMethod 示例也支持相同的数据目录参数：
 xmake run example_rr_pymethod resource/test_output/generated_datasets/two_x_one_y_torsion
 ```
 
-当前会生成 5 类工况：
+## 生成研究数据集
+
+Stage 3 新增 research dataset 出口，用于同时保存完整结构真值、physical observation 和 virtual probe。它与 qREST text dataset 分离：research dataset 面向算法研究和真值验证，qREST dataset 面向模拟真实监测数据。
+
+生成单个研究数据集：
+
+```bash
+qrest-model generate-research beam2d/configs/euler_3story.json --validate
+```
+
+生成内置研究 benchmark：
+
+```bash
+qrest-model generate-research-cases --validate
+qrest-model generate-research-cases --case mbi_timoshenko_3story_sparse --validate
+```
+
+默认输出到：
+
+```text
+output/research_datasets/<case-name>/
+```
+
+批量生成时，`output/research_datasets/manifest.json` 是集合级索引；每个子目录仍保留自己的 `manifest.json`。集合索引按 case name 排序，汇总 `research` 标签、truth 尺寸、physical/virtual observation 数量、derived quantity、稳定配置哈希和噪声配置状态。当前第一批 benchmark 不注入噪声，因此集合索引中的 `noise.configured` 为 `false`。
+
+目录结构为：
+
+```text
+manifest.json
+config.json
+truth/
+  response.npz
+  matrices.npz
+  modal.npz
+  structural_properties.json
+derived/
+  structural.npz
+observations/
+  physical/
+    acceleration.csv
+    velocity.csv
+    displacement.csv
+  virtual/
+    acceleration.csv
+    velocity.csv
+    displacement.csv
+metadata/
+  derived.json
+  observation.json
+  provenance.json
+```
+
+`truth/response.npz` 保存完整 `relative/absolute/ground` 时程；`truth/matrices.npz` 保存 `M/K/C` 和 DOF 标签；`truth/modal.npz` 保存真实频率、周期和质量归一化振型。`derived/structural.npz` 保存由 truth 计算得到的派生结构量，当前包括平动层间位移差、层间位移角和 beam-like 模型的层间转角差，并在 `metadata/derived.json` 记录单位、shape 和来源。`observations/physical` 只保存 physical sensor 通道，`observations/virtual` 保存研究用 virtual probe。`metadata/observation.json` 为每个 channel 保存 observation operator，research validator 会检查 operator 结构、frame、quantity、story、DOF 和系数合法性。单个 dataset 的 `manifest.json` 带有 `content_summary`，用于快速读取 time steps、DOF 数、observation 数量、observation quantity 和 derived quantity ID。`manifest.json` 和 `metadata/provenance.json` 使用稳定配置哈希，不写生成时间戳，因此同一 config/backend 生成结果可复现。
+
+`config/research/` 当前提供 9 个小规模 deterministic benchmark，覆盖所有 schema model family，并满足 Stage 3 第一批 OMA/MBI 族类覆盖：
+
+```text
+oma_shear_3story                    shear_building_1d，OMA 用全楼层 X 加速度
+oma_euler_3story                    euler_beam_2d，OMA 用 U 加速度与 Theta virtual probe
+oma_timoshenko_3story               timoshenko_beam_2d，OMA 用 U 加速度与 Theta virtual probe
+mbi_shear_3story_sparse             shear_building_1d，稀疏 X 加速度
+mbi_euler_3story_sparse             euler_beam_2d，稀疏 U 加速度与 Theta virtual probe
+mbi_rigid_3story_sparse             rigid_floor_shear_3d，稀疏 X/Y 加速度与 Rz virtual probe
+mbi_rayleigh_3story_sparse          rayleigh_beam_2d，稀疏 U 加速度与 Theta virtual probe
+mbi_timoshenko_3story_sparse        timoshenko_beam_2d，稀疏 U 加速度与 Theta virtual probe
+mbi_shear_flexure_3story_sparse     shear_flexure_building_2d，稀疏 U 加速度与 Theta virtual probe
+```
+
+这些 benchmark 的单个 `manifest.json` 会保留 `truth_policy`、`observation_config`、`noise_config`、`export_policy` 和 `research` 元数据；批量根目录的集合索引会把这些 case 摘要汇总到一个稳定 JSON 中，便于后续 OMA、mode completion 和 model-based identification 流程按研究任务筛选。
+
+## 官方批量测试工况
+
+官方 qREST 文本数据集仍会生成 5 类工况：
 
 ```text
 single_x                 单向 X 数据
@@ -719,6 +817,7 @@ n_steps = round(duration / dt) + 1
 当前测试覆盖：
 
 - schema、响应语义、`AnalysisResult` invariant 和 legacy wrapper
+- schema 分层重导出、矩阵/模态/响应 provenance metadata 和独立观测映射
 - 对称结构在 X 向输入下扭转响应接近 0
 - 偏心结构能激发扭转响应
 - 测点刚性楼板映射公式
@@ -726,6 +825,7 @@ n_steps = round(duration / dt) + 1
 - Euler、Rayleigh、Timoshenko 和 Shear-Flexure 的单元矩阵、装配矩阵和模型分发
 - Rayleigh → Euler、Timoshenko → Euler、Shear-Flexure → Flexure 的物理极限
 - 新增二维模型的 Direct 与 OpenSees 后端逐点对照
+- OpenSees imposed support motion 与 Direct 等效基底惯性输入的独立对照
 - story/global 刚度正定性与 Rayleigh 参考频率重频保护
 - dataset/exporter/CLI 生成链路和 golden regression signatures
 
@@ -734,6 +834,8 @@ OpenSees 集成测试带有独立 marker。默认若未设置环境变量会跳�
 ```bash
 QREST_RUN_OPENSEES_TESTS=1 .venv/bin/python -m pytest -m opensees
 ```
+
+仓库内的 GitHub Actions 会在 push/pull_request 上运行非 OpenSees 单元测试，并在 `workflow_dispatch` 手动触发时运行 OpenSees marker 测试。
 
 ## 已知说明
 

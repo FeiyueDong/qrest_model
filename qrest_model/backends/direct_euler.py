@@ -10,10 +10,12 @@ import numpy as np
 from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory, SensorResult
 from qrest_model.backends.direct_linear import run_linear_direct
 from qrest_model.common.ground_motion import load_ground_motion
+from qrest_model.common.provenance import direct_provenance
 from qrest_model.common.response import add_absolute_beam_response
 from qrest_model.exporters.backend_outputs import write_beam2d_outputs
 from qrest_model.models.euler_beam import EulerBeam2DModel
-from qrest_model.schema import BeamSensorConfig, EulerBeamModelConfig, load_euler_config
+from qrest_model.observations.beam import build_beam_sensor_result, build_beam_sensor_rows
+from qrest_model.schema import EulerBeamModelConfig, load_euler_config
 
 
 def run(config: EulerBeamModelConfig | str | Path, output_dir: str | Path | None = None) -> dict[str, Any]:
@@ -65,7 +67,7 @@ def run_result(config: EulerBeamModelConfig | str | Path) -> AnalysisResult:
             velocity=response["ground_velocity"],
             acceleration=response["ground_acceleration"],
         ),
-        sensors=build_sensor_result(model_config, response),
+        sensors=build_beam_sensor_result(model_config.sensors, response),
         mass_matrix=linear.mass_matrix,
         stiffness_matrix=linear.stiffness_matrix,
         damping_matrix=linear.damping_matrix,
@@ -78,7 +80,7 @@ def run_result(config: EulerBeamModelConfig | str | Path) -> AnalysisResult:
             ),
             rayleigh_alpha=linear.rayleigh_alpha,
             rayleigh_beta=linear.rayleigh_beta,
-            extras={
+            extras=direct_provenance() | {
                 "model_type": model_config.model_type,
                 "dof_per_floor": list(model_config.dof_per_floor),
                 "geometry": {
@@ -95,75 +97,11 @@ def run_result(config: EulerBeamModelConfig | str | Path) -> AnalysisResult:
 
 
 def build_sensor_result(config: EulerBeamModelConfig, result: dict[str, np.ndarray]) -> SensorResult:
-    displacement = tuple(_component(result["displacement"], sensor) for sensor in config.sensors)
-    velocity = tuple(_component(result["velocity"], sensor) for sensor in config.sensors)
-    acceleration = tuple(_component(result["acceleration"], sensor) for sensor in config.sensors)
-    absolute_displacement = tuple(_component(result["absolute_displacement"], sensor) for sensor in config.sensors)
-    absolute_velocity = tuple(_component(result["absolute_velocity"], sensor) for sensor in config.sensors)
-    absolute_acceleration = tuple(_component(result["absolute_acceleration"], sensor) for sensor in config.sensors)
-    return SensorResult(
-        rows=build_sensor_rows(config, result),
-        displacement=displacement,
-        velocity=velocity,
-        acceleration=acceleration,
-        absolute_displacement=absolute_displacement,
-        absolute_velocity=absolute_velocity,
-        absolute_acceleration=absolute_acceleration,
-    )
+    return build_beam_sensor_result(config.sensors, result)
 
 
 def build_sensor_rows(config: EulerBeamModelConfig, result: dict[str, np.ndarray]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for sensor in config.sensors:
-        story_index = sensor.story - 1
-        component_index = _sensor_component_index(sensor)
-        for step, t in enumerate(result["time"]):
-            disp = result["displacement"][step, story_index, component_index]
-            vel = result["velocity"][step, story_index, component_index]
-            acc = result["acceleration"][step, story_index, component_index]
-            abs_disp = result["absolute_displacement"][step, story_index, component_index]
-            abs_vel = result["absolute_velocity"][step, story_index, component_index]
-            abs_acc = result["absolute_acceleration"][step, story_index, component_index]
-            rows.append(
-                {
-                    "time": t,
-                    "story": sensor.story,
-                    "node_or_sensor_id": sensor.sensor_id,
-                    "dof": sensor.dof,
-                    "quantity": sensor.quantity,
-                    "u": result["displacement"][step, story_index, 0],
-                    "theta": result["displacement"][step, story_index, 1],
-                    "v": result["velocity"][step, story_index, 0],
-                    "vtheta": result["velocity"][step, story_index, 1],
-                    "a": result["acceleration"][step, story_index, 0],
-                    "atheta": result["acceleration"][step, story_index, 1],
-                    "abs_u": result["absolute_displacement"][step, story_index, 0],
-                    "abs_theta": result["absolute_displacement"][step, story_index, 1],
-                    "abs_v": result["absolute_velocity"][step, story_index, 0],
-                    "abs_vtheta": result["absolute_velocity"][step, story_index, 1],
-                    "abs_a": result["absolute_acceleration"][step, story_index, 0],
-                    "abs_atheta": result["absolute_acceleration"][step, story_index, 1],
-                    "value": _project(sensor.quantity, abs_disp, abs_vel, abs_acc),
-                    "relative_value": _project(sensor.quantity, disp, vel, acc),
-                }
-            )
-    return rows
-
-
-def _component(values: np.ndarray, sensor: BeamSensorConfig) -> np.ndarray:
-    return values[:, sensor.story - 1, _sensor_component_index(sensor)]
-
-
-def _sensor_component_index(sensor: BeamSensorConfig) -> int:
-    return 0 if sensor.dof == "U" else 1
-
-
-def _project(quantity: str, disp: float, vel: float, acc: float) -> float:
-    if quantity in {"disp", "displacement"}:
-        return float(disp)
-    if quantity in {"vel", "velocity"}:
-        return float(vel)
-    return float(acc)
+    return build_beam_sensor_rows(config.sensors, result)
 
 
 def _section_rows(config: EulerBeamModelConfig) -> list[dict[str, Any]]:

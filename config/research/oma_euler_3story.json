@@ -1,0 +1,69 @@
+{
+  "name": "oma_euler_3story",
+  "data_type": "research",
+  "model_type": "euler_beam_2d",
+  "description": "Small deterministic Euler beam OMA baseline with translational physical observations and Theta virtual probe.",
+  "research": {
+    "task": "oma",
+    "family": "euler",
+    "sensor_density": "sparse"
+  },
+  "truth_policy": {
+    "include_full_response": true,
+    "include_modal": true,
+    "include_matrices": true
+  },
+  "observations": {
+    "physical": {
+      "stories": [1, 3],
+      "dofs": ["U"],
+      "quantity": "acceleration"
+    },
+    "virtual": {
+      "stories": [3],
+      "dofs": ["Theta"],
+      "quantity": "displacement"
+    }
+  },
+  "model_config": {
+    "schema_version": "2.0",
+    "model": {
+      "type": "euler_beam_2d",
+      "num_stories": 3,
+      "dof_per_floor": ["U", "Theta"]
+    },
+    "geometry": {
+      "story_heights": [3.0, 3.0, 3.0]
+    },
+    "section_defaults": {
+      "E": 30000000000.0,
+      "A": 20.0,
+      "I": 90.0,
+      "density": 2500.0
+    },
+    "sections": [
+      {"story": 1},
+      {"story": 2, "I": 80.0},
+      {"story": 3, "I": 70.0}
+    ],
+    "sensors": [
+      {"id": "01f_u", "story": 1, "dof": "U", "quantity": "accel"},
+      {"id": "03f_u", "story": 3, "dof": "U", "quantity": "accel"},
+      {"id": "03f_theta", "story": 3, "dof": "Theta", "quantity": "disp", "kind": "virtual"}
+    ],
+    "damping": {
+      "type": "rayleigh",
+      "zeta": 0.02,
+      "modes": [1, 2]
+    },
+    "ground_motion": {
+      "dt": 0.01,
+      "duration": 0.1,
+      "synthetic": {
+        "amplitude_x": 0.1,
+        "amplitude_y": 0.0,
+        "frequency_x": 1.0
+      }
+    }
+  }
+}

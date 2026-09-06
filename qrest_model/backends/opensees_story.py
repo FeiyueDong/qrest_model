@@ -13,10 +13,11 @@ from qrest_model.schema import ElementConfig, ModelConfig, StoryConfig, load_con
 from qrest_model.common.damping import rayleigh_coefficients
 from qrest_model.common.ground_motion import load_ground_motion
 from qrest_model.common.opensees import import_opensees
+from qrest_model.common.provenance import opensees_provenance
 from qrest_model.common.response import add_absolute_floor_response
 from qrest_model.exporters.backend_outputs import write_story3d_outputs
 from qrest_model.models.rigid_floor import RigidFloorBuildingModel
-from qrest_model.postprocess.sensor_mapping import build_sensor_rows_from_motion
+from qrest_model.postprocess.sensor_mapping import build_sensor_channels, build_sensor_rows_from_motion
 from qrest_model.theory.story_stiffness import story_stiffness_table
 
 
@@ -75,6 +76,7 @@ def run_result(config: ModelConfig | str | Path) -> AnalysisResult:
         ),
         sensors=SensorResult(
             rows=sensor_rows,
+            channels=build_sensor_channels(model_config.sensors),
             displacement=response["sensor_displacement"],
             velocity=response["sensor_velocity"],
             acceleration=response["sensor_acceleration"],
@@ -94,7 +96,7 @@ def run_result(config: ModelConfig | str | Path) -> AnalysisResult:
             ),
             rayleigh_alpha=alpha,
             rayleigh_beta=beta,
-            extras={
+            extras=opensees_provenance() | {
                 "ground_displacement_source": response["ground_displacement_source"],
                 "ground_velocity_source": response["ground_velocity_source"],
             },

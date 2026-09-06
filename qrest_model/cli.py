@@ -17,7 +17,15 @@ from qrest_model.backends.base import (
     dispatch_model_case,
 )
 from qrest_model.common.compare import compare_master_arrays
-from qrest_model.datasets import DATASET_CONFIG_ROOT, MODEL_ROOT, generate_all
+from qrest_model.datasets import (
+    DATASET_CONFIG_ROOT,
+    MODEL_ROOT,
+    RESEARCH_CONFIG_ROOT,
+    generate_all,
+    generate_research_cases,
+    generate_research_dataset,
+)
+from qrest_model.datasets.validation import validate_research_dataset, validate_research_dataset_collection
 from qrest_model.exporters.backend_outputs import write_beam2d_outputs, write_shear_outputs, write_story3d_outputs
 from qrest_model.exporters.qrest_dataset import (
     DEFAULT_CONFIG_SOURCE,
@@ -69,6 +77,22 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--config-source", default=DEFAULT_CONFIG_SOURCE)
     export_parser.set_defaults(func=_export_qrest_command)
 
+    research_parser = subparsers.add_parser("generate-research", help="Generate one research dataset with truth and observations.")
+    research_parser.add_argument("case", help="Path to JSON model config.")
+    research_parser.add_argument("--backend", default="direct", choices=("direct", "opensees"))
+    research_parser.add_argument("--output", default=None, help="Output directory. Defaults to output/research_datasets/<case-stem>.")
+    research_parser.add_argument("--name", default=None, help="Research dataset name. Defaults to the case filename stem.")
+    research_parser.add_argument("--validate", action="store_true", help="Validate the generated research dataset.")
+    research_parser.set_defaults(func=_generate_research_command)
+
+    research_cases_parser = subparsers.add_parser("generate-research-cases", help="Generate configured research datasets.")
+    research_cases_parser.add_argument("--output-root", default=str(MODEL_ROOT / "output" / "research_datasets"))
+    research_cases_parser.add_argument("--config-root", default=str(RESEARCH_CONFIG_ROOT))
+    research_cases_parser.add_argument("--case", action="append", help="Generate only the selected research case. May be repeated.")
+    research_cases_parser.add_argument("--backend", default="direct", choices=("direct", "opensees"))
+    research_cases_parser.add_argument("--validate", action="store_true", help="Validate generated research datasets.")
+    research_cases_parser.set_defaults(func=_generate_research_cases_command)
+
     return parser
 
 
@@ -116,6 +140,32 @@ def _export_qrest_command(args: argparse.Namespace) -> int:
     exported = export_generated_cases(args.input, args.output, config_source=config_source)
     for path in exported:
         print(path)
+    return 0
+
+
+def _generate_research_command(args: argparse.Namespace) -> int:
+    output = Path(args.output) if args.output else MODEL_ROOT / "output" / "research_datasets" / Path(args.case).stem
+    generated = generate_research_dataset(args.case, output, name=args.name, backend=args.backend)
+    print(generated)
+    if args.validate:
+        metrics = validate_research_dataset(generated)
+        print(_format_research_metrics(metrics))
+    return 0
+
+
+def _generate_research_cases_command(args: argparse.Namespace) -> int:
+    generated = generate_research_cases(
+        args.output_root,
+        args.case,
+        args.config_root,
+        backend=args.backend,
+    )
+    for path in generated:
+        print(path)
+        if args.validate:
+            print(_format_research_metrics(validate_research_dataset(path)))
+    if args.validate:
+        print(_format_research_metrics(validate_research_dataset_collection(args.output_root)))
     return 0
 
 
@@ -174,6 +224,10 @@ def _case_model_type(case: str | Path) -> str:
 
 def _format_metrics(metrics: dict[str, float]) -> str:
     return "\n".join(f"{key}: {value:.6e}" for key, value in metrics.items())
+
+
+def _format_research_metrics(metrics: dict[str, object]) -> str:
+    return "\n".join(f"{key}: {value}" for key, value in metrics.items())
 
 
 def _metrics_exceed_tolerance(

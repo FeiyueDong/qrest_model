@@ -9,13 +9,14 @@ import numpy as np
 
 from qrest_model.analysis.modal import modal_analysis
 from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, ResponseHistory
-from qrest_model.backends.direct_euler import build_sensor_result
 from qrest_model.common.damping import rayleigh_coefficients
 from qrest_model.common.ground_motion import load_ground_motion
 from qrest_model.common.opensees import import_opensees
+from qrest_model.common.provenance import opensees_provenance
 from qrest_model.common.response import add_absolute_beam_response
 from qrest_model.exporters.backend_outputs import write_beam2d_outputs
 from qrest_model.models.euler_beam import EulerBeam2DModel
+from qrest_model.observations.beam import build_beam_sensor_result
 from qrest_model.schema import EulerBeamModelConfig, load_euler_config
 from qrest_model.theory.euler_beam import base_excitation_influence, base_excitation_load_vector
 
@@ -61,7 +62,7 @@ def run_result(config: EulerBeamModelConfig | str | Path) -> AnalysisResult:
             velocity=response["ground_velocity"],
             acceleration=response["ground_acceleration"],
         ),
-        sensors=build_sensor_result(model_config, response),
+        sensors=build_beam_sensor_result(model_config.sensors, response),
         mass_matrix=mass,
         stiffness_matrix=stiffness,
         damping_matrix=alpha * mass + beta * stiffness,
@@ -74,7 +75,7 @@ def run_result(config: EulerBeamModelConfig | str | Path) -> AnalysisResult:
             ),
             rayleigh_alpha=alpha,
             rayleigh_beta=beta,
-            extras={
+            extras=opensees_provenance() | {
                 "model_type": model_config.model_type,
                 "dof_per_floor": list(model_config.dof_per_floor),
                 "opensees_frequency_hz": response["opensees_frequency_hz"].tolist(),

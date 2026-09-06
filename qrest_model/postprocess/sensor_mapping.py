@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from qrest_model.analysis.result import SensorResult
+from qrest_model.observations.base import physical_channel, quantity_unit, rigid_floor_operator, virtual_dof_probe
 from qrest_model.schema import SensorConfig
 
 
@@ -84,6 +85,7 @@ def build_sensor_result(
     )
     return SensorResult(
         rows=rows,
+        channels=build_sensor_channels(sensors),
         displacement=tuple(mapped_displacement),
         velocity=tuple(mapped_velocity),
         acceleration=tuple(mapped_acceleration),
@@ -91,6 +93,10 @@ def build_sensor_result(
         absolute_velocity=tuple(mapped_absolute_velocity) if mapped_absolute_velocity else None,
         absolute_acceleration=tuple(mapped_absolute_acceleration) if mapped_absolute_acceleration else None,
     )
+
+
+def build_sensor_channels(sensors: tuple[SensorConfig, ...]):
+    return tuple(_channel(sensor) for sensor in sensors)
 
 
 def build_sensor_rows_from_motion(
@@ -111,14 +117,17 @@ def build_sensor_rows_from_motion(
         abs_disp = _optional_motion(absolute_displacement_by_sensor, sensor_index, disp)
         abs_vel = _optional_motion(absolute_velocity_by_sensor, sensor_index, vel)
         abs_acc = _optional_motion(absolute_acceleration_by_sensor, sensor_index, acc)
+        unit = _sensor_unit(sensor)
         for step, t in enumerate(time):
             rows.append(
                 {
                     "time": t,
                     "story": sensor.story,
                     "node_or_sensor_id": sensor.sensor_id,
+                    "observation_kind": sensor.kind,
                     "direction": sensor.direction,
                     "quantity": sensor.quantity,
+                    "unit": unit,
                     "ux": disp[step, 0],
                     "uy": disp[step, 1],
                     "rz": disp[step, 2],
@@ -158,3 +167,50 @@ def _optional_motion(motions: tuple[np.ndarray, ...] | None, index: int, fallbac
     if motions is None:
         return fallback
     return motions[index]
+
+
+def _channel(sensor: SensorConfig):
+    if sensor.kind == "virtual":
+        return virtual_dof_probe(
+            sensor.sensor_id,
+            story=sensor.story,
+            quantity=sensor.quantity,
+            dof=sensor.direction,
+            operator=rigid_floor_operator(
+                story=sensor.story,
+                quantity=sensor.quantity,
+                direction=sensor.direction,
+                x=sensor.x,
+                y=sensor.y,
+                frame="relative",
+            ),
+        )
+    return physical_channel(
+        sensor.sensor_id,
+        story=sensor.story,
+        quantity=sensor.quantity,
+        direction=sensor.direction,
+        location=(sensor.x, sensor.y),
+        source={"type": "rigid_floor_mapping", "model_dofs": _source_dofs(sensor.direction)},
+        operator=rigid_floor_operator(
+            story=sensor.story,
+            quantity=sensor.quantity,
+            direction=sensor.direction,
+            x=sensor.x,
+            y=sensor.y,
+            frame="absolute",
+        ),
+    )
+
+
+def _sensor_unit(sensor: SensorConfig) -> str:
+    axis = "rotation" if sensor.direction == "RZ" else "translation"
+    return quantity_unit(sensor.quantity, axis=axis)
+
+
+def _source_dofs(direction: str) -> list[str]:
+    if direction == "X":
+        return ["Ux", "Rz"]
+    if direction == "Y":
+        return ["Uy", "Rz"]
+    return ["Rz"]

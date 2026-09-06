@@ -11,6 +11,7 @@ from qrest_model.analysis.result import AnalysisResult
 from qrest_model.backends import run_analysis
 from qrest_model.common.io import ensure_output_dir
 from qrest_model.datasets.cases import DATASET_CONFIG_ROOT, DatasetCase, dataset_cases
+from qrest_model.schema import SHEAR_BUILDING_1D
 from qrest_model.exporters.algorithm_config import write_algorithm_configs
 from qrest_model.exporters.structural_properties import write_structural_properties
 from qrest_model.exporters.time_history import (
@@ -58,8 +59,8 @@ def generate_official_case(case: DatasetCase, case_dir: str | Path) -> Path:
     result = run_analysis(config_path, backend="direct")
 
     master_dir = ensure_output_dir(case_dir / "master_time_history")
-    if case.model_type == "shear1d":
-        write_shear_master_time_history(master_dir, result)
+    if case.model_type == SHEAR_BUILDING_1D:
+        write_shear_master_time_history(master_dir, result, case.config)
     else:
         write_story3d_master_time_history(master_dir, result)
     write_structural_properties(case, case_dir / "structural_properties", result)

@@ -25,6 +25,7 @@ from qrest_model.theory.story_stiffness import story_stiffness
 from qrest_model.theory.shear_stiffness import assemble_shear_stiffness
 from qrest_model.postprocess import map_floor_motion, map_sensors
 from qrest_model.schema import (
+    SHEAR_BUILDING_1D,
     load_shear_config,
     normalize_euler_config,
     normalize_rayleigh_config,
@@ -143,7 +144,7 @@ def _golden_rigid_eccentric_raw() -> dict:
     raw["sensors"] = [
         {"id": "roof_x_ypos", "story": 3, "x": 5.0, "y": 3.0, "direction": "X"},
         {"id": "roof_y_xneg", "story": 3, "x": -5.0, "y": 0.0, "direction": "Y"},
-        {"id": "roof_rz", "story": 3, "x": 0.0, "y": 0.0, "direction": "RZ"},
+        {"id": "roof_rz", "story": 3, "x": 0.0, "y": 0.0, "direction": "RZ", "kind": "virtual"},
     ]
     raw["ground_motion"] = {
         "dt": 0.01,
@@ -263,10 +264,26 @@ def _assert_response_close(
     velocity_atol: float = 1.0e-7,
     acceleration_atol: float = 1.0e-6,
 ) -> None:
+    _assert_opensees_provenance(opensees)
     assert np.allclose(direct.relative.displacement, opensees.relative.displacement, atol=displacement_atol, rtol=1.0e-7)
     assert np.allclose(direct.relative.velocity, opensees.relative.velocity, atol=velocity_atol, rtol=1.0e-7)
     assert np.allclose(direct.relative.acceleration, opensees.relative.acceleration, atol=acceleration_atol, rtol=1.0e-7)
     assert np.allclose(direct.absolute.acceleration, opensees.absolute.acceleration, atol=acceleration_atol, rtol=1.0e-7)
+
+
+def _assert_direct_provenance(result: AnalysisResult) -> None:
+    metadata = result.metadata.to_dict()
+    assert metadata["matrix_source"] == "qrest_model_theory"
+    assert metadata["modal_source"] == "qrest_model_matrix"
+    assert metadata["response_source"] == "direct_newmark"
+
+
+def _assert_opensees_provenance(result: AnalysisResult) -> None:
+    metadata = result.metadata.to_dict()
+    assert metadata["matrix_source"] == "qrest_model_theory"
+    assert metadata["modal_source"] == "qrest_model_matrix"
+    assert metadata["backend_modal_source"] == "opensees_eigen"
+    assert metadata["response_source"] == "opensees"
 
 
 def _scaled_corner_elements(scale: float) -> list[dict]:
@@ -297,6 +314,20 @@ def test_common_config_modules_reexport_schema_entry_points() -> None:
 
     assert legacy_config.normalize_config is normalize_config
     assert legacy_shear_config.normalize_shear_config is normalize_shear_config
+
+
+def test_direct_metadata_records_matrix_modal_and_response_provenance() -> None:
+    cases = [
+        _base_raw(num_stories=2),
+        _golden_shear_raw(),
+        _euler_raw(num_stories=2),
+        _rayleigh_raw(num_stories=2),
+        _timoshenko_raw(num_stories=2),
+        _shear_flexure_raw(num_stories=2),
+    ]
+
+    for raw in cases:
+        _assert_direct_provenance(run_analysis(raw, backend="direct"))
 
 
 def test_schema_version_and_model_type_are_strict() -> None:
@@ -828,6 +859,7 @@ def test_cli_run_writes_shear_flexure_backend_outputs(tmp_path: Path, capsys: py
 
 def _assert_euler_response_close(direct: AnalysisResult, opensees: AnalysisResult) -> None:
     assert opensees.metadata.backend == "opensees_euler"
+    _assert_opensees_provenance(opensees)
     assert np.allclose(
         np.asarray(opensees.metadata.extras["opensees_frequency_hz"]),
         direct.modal.frequency,
@@ -842,6 +874,7 @@ def _assert_euler_response_close(direct: AnalysisResult, opensees: AnalysisResul
 
 def _assert_rayleigh_response_close(direct: AnalysisResult, opensees: AnalysisResult) -> None:
     assert opensees.metadata.backend == "opensees_rayleigh"
+    _assert_opensees_provenance(opensees)
     assert np.allclose(
         np.asarray(opensees.metadata.extras["opensees_frequency_hz"]),
         direct.modal.frequency,
@@ -856,6 +889,7 @@ def _assert_rayleigh_response_close(direct: AnalysisResult, opensees: AnalysisRe
 
 def _assert_timoshenko_response_close(direct: AnalysisResult, opensees: AnalysisResult) -> None:
     assert opensees.metadata.backend == "opensees_timoshenko"
+    _assert_opensees_provenance(opensees)
     assert np.allclose(
         np.asarray(opensees.metadata.extras["opensees_frequency_hz"]),
         direct.modal.frequency,
@@ -870,6 +904,7 @@ def _assert_timoshenko_response_close(direct: AnalysisResult, opensees: Analysis
 
 def _assert_shear_flexure_response_close(direct: AnalysisResult, opensees: AnalysisResult) -> None:
     assert opensees.metadata.backend == "opensees_shear_flexure"
+    _assert_opensees_provenance(opensees)
     assert np.allclose(
         np.asarray(opensees.metadata.extras["opensees_frequency_hz"]),
         direct.modal.frequency,
@@ -1313,7 +1348,7 @@ def test_generated_dataset_case_definitions_cover_requested_channel_forms() -> N
         "staggered_2x_center_y",
     }
     assert config_names == set(cases)
-    assert cases["single_x"].model_type == "shear1d"
+    assert cases["single_x"].model_type == SHEAR_BUILDING_1D
     assert {sensor["story"] for sensor in cases["dual_xy"].config["sensors"]} == {1, 3, 7, 11, 16}
     assert {sensor.get("direction", "X") for sensor in cases["dual_xy"].config["sensors"]} == {"X", "Y"}
     assert len(cases["two_x_one_y_torsion"].config["sensors"]) == 15
@@ -1802,7 +1837,7 @@ def test_opensees_matches_direct_for_eccentric_sensor_case() -> None:
     raw["sensors"] = [
         {"id": "roof_x_ypos", "story": 2, "x": 5.0, "y": 3.0, "direction": "X"},
         {"id": "roof_y_xpos", "story": 2, "x": 5.0, "y": 0.0, "direction": "Y"},
-        {"id": "roof_rz", "story": 2, "x": 0.0, "y": 0.0, "direction": "RZ"},
+        {"id": "roof_rz", "story": 2, "x": 0.0, "y": 0.0, "direction": "RZ", "kind": "virtual"},
     ]
     raw["ground_motion"] = {
         "dt": 0.01,

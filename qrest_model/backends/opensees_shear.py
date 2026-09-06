@@ -12,14 +12,15 @@ from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, Respon
 from qrest_model.common.damping import rayleigh_coefficients
 from qrest_model.common.ground_motion import load_ground_motion
 from qrest_model.common.opensees import import_opensees
+from qrest_model.common.provenance import opensees_provenance
 from qrest_model.common.response import add_absolute_shear_response
 from qrest_model.schema import ShearModelConfig, load_shear_config
 from qrest_model.exporters.backend_outputs import write_shear_outputs
 from qrest_model.models.shear_building import ShearBuildingModel
+from qrest_model.observations.shear import build_shear_sensor_result
 from qrest_model.theory.shear_stiffness import (
     shear_story_stiffness_table,
 )
-from qrest_model.backends.direct_shear import build_sensor_result
 
 
 def run(config: ShearModelConfig | str | Path, output_dir: str | Path | None = None) -> dict[str, Any]:
@@ -65,7 +66,7 @@ def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
             velocity=response["ground_velocity"],
             acceleration=response["ground_acceleration"],
         ),
-        sensors=build_sensor_result(model_config, response),
+        sensors=build_shear_sensor_result(model_config.sensors, response, direction=model_config.direction),
         mass_matrix=mass,
         stiffness_matrix=stiffness,
         damping_matrix=alpha * mass + beta * stiffness,
@@ -78,7 +79,7 @@ def run_result(config: ShearModelConfig | str | Path) -> AnalysisResult:
             ),
             rayleigh_alpha=alpha,
             rayleigh_beta=beta,
-            extras={
+            extras=opensees_provenance() | {
                 "direction": model_config.direction,
                 "ground_displacement_source": response["ground_displacement_source"],
                 "ground_velocity_source": response["ground_velocity_source"],

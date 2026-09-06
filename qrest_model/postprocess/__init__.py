@@ -2,6 +2,7 @@
 
 from qrest_model.postprocess.master_mapping import map_sensors
 from qrest_model.postprocess.sensor_mapping import (
+    build_sensor_channels,
     build_sensor_rows,
     build_sensor_rows_from_motion,
     build_sensor_result,
@@ -9,6 +10,7 @@ from qrest_model.postprocess.sensor_mapping import (
 )
 
 __all__ = [
+    "build_sensor_channels",
     "build_sensor_rows",
     "build_sensor_rows_from_motion",
     "build_sensor_result",

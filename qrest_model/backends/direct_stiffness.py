@@ -14,6 +14,7 @@ from qrest_model.analysis.result import AnalysisMetadata, AnalysisResult, Respon
 from qrest_model.backends.direct_linear import run_linear_direct
 from qrest_model.schema import ModelConfig, load_config
 from qrest_model.common.ground_motion import load_ground_motion
+from qrest_model.common.provenance import direct_provenance
 from qrest_model.common.response import add_absolute_floor_response
 from qrest_model.exporters.backend_outputs import write_story3d_outputs
 from qrest_model.models.rigid_floor import RigidFloorBuildingModel
@@ -95,7 +96,7 @@ def run_result(config: ModelConfig | str | Path) -> AnalysisResult:
             ),
             rayleigh_alpha=linear.rayleigh_alpha,
             rayleigh_beta=linear.rayleigh_beta,
-            extras={
+            extras=direct_provenance() | {
                 "ground_displacement_source": response["ground_displacement_source"],
                 "ground_velocity_source": response["ground_velocity_source"],
             },

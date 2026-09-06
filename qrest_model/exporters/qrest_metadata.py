@@ -36,7 +36,7 @@ def build_qrest_metadata(
     geometry = normalize_geometry(geometry_raw, num_stories)
     elevations = list(geometry.elevations)
     footprint = _structural_footprint(config)
-    channels = _channels(config.get("sensors", []), elevations)
+    channels = _channels(config, elevations)
 
     return {
         "Header": "qREST_DATA",
@@ -106,13 +106,17 @@ def count_csv_data_rows(path: str | Path | None) -> int | None:
         return sum(1 for _row in csv.DictReader(handle))
 
 
-def _channels(sensors: list[dict[str, Any]], elevations: list[float]) -> list[dict[str, Any]]:
+def _channels(config: dict[str, Any], elevations: list[float]) -> list[dict[str, Any]]:
     channels = []
-    for index, sensor in enumerate(sensors, start=1):
+    observations = config.get("observations", config.get("sensors", []))
+    for sensor in observations:
+        direction = _physical_qrest_direction(sensor)
+        if direction is None:
+            continue
         story = int(sensor["story"])
         if story < 1 or story > len(elevations):
-            raise ValueError(f"Sensor {sensor.get('id', index)} story {story} is outside elevations.")
-        direction = str(sensor.get("direction", "X")).upper()
+            raise ValueError(f"Sensor {sensor.get('id', len(channels) + 1)} story {story} is outside elevations.")
+        index = len(channels) + 1
         channels.append(
             {
                 "ChannelNo": index,
@@ -129,6 +133,42 @@ def _channels(sensors: list[dict[str, Any]], elevations: list[float]) -> list[di
             }
         )
     return channels
+
+
+def _physical_qrest_direction(sensor: dict[str, Any]) -> str | None:
+    kind = _observation_kind(sensor)
+    if kind == "virtual":
+        return None
+
+    dof = str(sensor.get("dof", "")).strip().upper()
+    if dof and dof not in {"U", "UX", "X"}:
+        raise ValueError(
+            f"Observation {sensor.get('id', '<unknown>')} uses dof {dof!r}, which cannot be exported as a qREST physical channel."
+        )
+
+    direction = str(sensor.get("direction", "X")).upper()
+    if direction == "RZ":
+        raise ValueError(
+            f"Observation {sensor.get('id', '<unknown>')} uses structural Rz, which cannot be exported as a qREST physical channel."
+        )
+    if direction not in {"X", "Y", "Z"}:
+        raise ValueError(f"Unsupported qREST metadata sensor direction: {direction}")
+    return direction
+
+
+def _observation_kind(sensor: dict[str, Any]) -> str:
+    raw_kind = sensor.get("kind")
+    if raw_kind is not None:
+        kind = str(raw_kind).lower()
+        if kind not in {"physical", "virtual"}:
+            raise ValueError(f"Unsupported observation kind: {raw_kind}")
+        return kind
+
+    dof = str(sensor.get("dof", "")).strip().lower()
+    direction = str(sensor.get("direction", "")).upper()
+    if dof in {"theta", "rotation"} or direction == "RZ":
+        return "virtual"
+    return "physical"
 
 
 def _measurand(quantity: Any) -> str:

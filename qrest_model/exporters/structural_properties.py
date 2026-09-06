@@ -12,6 +12,14 @@ from qrest_model.analysis.result import AnalysisResult
 from qrest_model.analysis.modal import modal_analysis
 from qrest_model.common.io import ensure_output_dir
 from qrest_model.exporters.time_history import write_csv
+from qrest_model.schema import (
+    EULER_BEAM_2D,
+    RAYLEIGH_BEAM_2D,
+    RIGID_FLOOR_SHEAR_3D,
+    SHEAR_FLEXURE_BUILDING_2D,
+    SHEAR_BUILDING_1D,
+    TIMOSHENKO_BEAM_2D,
+)
 
 if TYPE_CHECKING:
     from qrest_model.datasets.cases import DatasetCase
@@ -51,12 +59,20 @@ def write_structural_properties(case: "DatasetCase", output_dir: str | Path, res
 
 
 def dof_labels_for_case(case: "DatasetCase") -> list[str]:
-    if case.model_type == "shear1d":
+    if case.model_type in {"shear1d", SHEAR_BUILDING_1D}:
         direction = str(case.config.get("model", {}).get("dof_per_floor", ["Ux"])[0])[-1].lower()
         return [
             f"story_{story:02d}_{direction}"
             for story in range(1, case.config["model"]["num_stories"] + 1)
         ]
+    if case.model_type in {EULER_BEAM_2D, RAYLEIGH_BEAM_2D, TIMOSHENKO_BEAM_2D, SHEAR_FLEXURE_BUILDING_2D}:
+        return [
+            f"story_{story:02d}_{component}"
+            for story in range(1, case.config["model"]["num_stories"] + 1)
+            for component in ("u", "theta")
+        ]
+    if case.model_type not in {"story3d", RIGID_FLOOR_SHEAR_3D}:
+        raise ValueError(f"Unsupported structural properties model_type: {case.model_type}")
     return [
         f"story_{story:02d}_{component}"
         for story in range(1, case.config["model"]["num_stories"] + 1)

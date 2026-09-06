@@ -10,6 +10,17 @@ import numpy as np
 from qrest_model.analysis.modal import ModalResult
 
 
+def _canonical_quantity(quantity: str) -> str:
+    normalized = quantity.lower()
+    if normalized in {"disp", "displacement"}:
+        return "displacement"
+    if normalized in {"vel", "velocity"}:
+        return "velocity"
+    if normalized in {"accel", "acceleration"}:
+        return "acceleration"
+    raise ValueError(f"Unsupported observation quantity: {quantity}")
+
+
 @dataclass(frozen=True)
 class ResponseHistory:
     displacement: np.ndarray
@@ -34,14 +45,145 @@ class ResponseHistory:
 
 
 @dataclass(frozen=True)
-class SensorResult:
+class ObservationTerm:
+    frame: str
+    quantity: str
+    story: int
+    dof: str
+    coefficient: float = 1.0
+
+    def __post_init__(self) -> None:
+        frame = self.frame.lower()
+        if frame not in {"relative", "absolute", "ground"}:
+            raise ValueError(f"Unsupported observation term frame: {self.frame}")
+        if self.story < 0:
+            raise ValueError("ObservationTerm.story must be non-negative.")
+        coefficient = float(self.coefficient)
+        if not np.isfinite(coefficient):
+            raise ValueError("ObservationTerm.coefficient must be finite.")
+        object.__setattr__(self, "frame", frame)
+        object.__setattr__(self, "quantity", _canonical_quantity(self.quantity))
+        object.__setattr__(self, "dof", self.dof)
+        object.__setattr__(self, "coefficient", coefficient)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "frame": self.frame,
+            "quantity": self.quantity,
+            "story": self.story,
+            "dof": self.dof,
+            "coefficient": self.coefficient,
+        }
+
+
+@dataclass(frozen=True)
+class ObservationOperator:
+    terms: tuple[ObservationTerm, ...]
+    form: str = "linear_combination"
+
+    def __post_init__(self) -> None:
+        if self.form != "linear_combination":
+            raise ValueError(f"Unsupported observation operator form: {self.form}")
+        if not self.terms:
+            raise ValueError("ObservationOperator.terms must not be empty.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "form": self.form,
+            "terms": [term.to_dict() for term in self.terms],
+        }
+
+
+@dataclass(frozen=True)
+class ObservationChannel:
+    observation_id: str
+    kind: str
+    story: int
+    quantity: str
+    unit: str
+    direction: str | None = None
+    dof: str | None = None
+    sensor_type: str | None = None
+    probe_type: str | None = None
+    location: tuple[float, ...] | None = None
+    source: dict[str, Any] = field(default_factory=dict)
+    operator: ObservationOperator | None = None
+
+    def __post_init__(self) -> None:
+        kind = self.kind.lower()
+        if kind not in {"physical", "virtual"}:
+            raise ValueError(f"Unsupported observation kind: {self.kind}")
+        if self.story < 1:
+            raise ValueError("ObservationChannel.story must be positive.")
+        quantity = _canonical_quantity(self.quantity)
+        if self.direction is not None and self.dof is not None:
+            raise ValueError("ObservationChannel cannot define both direction and dof.")
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "quantity", quantity)
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "id": self.observation_id,
+            "kind": self.kind,
+            "story": self.story,
+            "quantity": self.quantity,
+            "unit": self.unit,
+        }
+        if self.direction is not None:
+            data["direction"] = self.direction
+        if self.dof is not None:
+            data["dof"] = self.dof
+        if self.sensor_type is not None:
+            data["sensor_type"] = self.sensor_type
+        if self.probe_type is not None:
+            data["probe_type"] = self.probe_type
+        if self.location is not None:
+            data["location"] = list(self.location)
+        if self.source:
+            data["source"] = self.source
+        if self.operator is not None:
+            data["operator"] = self.operator.to_dict()
+        return data
+
+
+@dataclass(frozen=True)
+class ObservationResult:
     rows: list[dict[str, Any]] = field(default_factory=list)
+    channels: tuple[ObservationChannel, ...] = ()
     displacement: tuple[np.ndarray, ...] | None = None
     velocity: tuple[np.ndarray, ...] | None = None
     acceleration: tuple[np.ndarray, ...] | None = None
     absolute_displacement: tuple[np.ndarray, ...] | None = None
     absolute_velocity: tuple[np.ndarray, ...] | None = None
     absolute_acceleration: tuple[np.ndarray, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.channels:
+            return
+        channel_count = len(self.channels)
+        for name, histories in (
+            ("displacement", self.displacement),
+            ("velocity", self.velocity),
+            ("acceleration", self.acceleration),
+            ("absolute_displacement", self.absolute_displacement),
+            ("absolute_velocity", self.absolute_velocity),
+            ("absolute_acceleration", self.absolute_acceleration),
+        ):
+            if histories is not None and len(histories) != channel_count:
+                raise ValueError(f"ObservationResult.{name} must have one array per channel.")
+
+    def channels_by_kind(self, kind: str) -> tuple[ObservationChannel, ...]:
+        normalized = kind.lower()
+        return tuple(channel for channel in self.channels if channel.kind == normalized)
+
+    def rows_by_kind(self, kind: str) -> list[dict[str, Any]]:
+        normalized = kind.lower()
+        return [row for row in self.rows if row.get("observation_kind") == normalized]
+
+
+@dataclass(frozen=True)
+class SensorResult(ObservationResult):
+    """Compatibility alias for legacy sensor mapping results."""
 
 
 @dataclass(frozen=True)
@@ -77,6 +219,7 @@ class AnalysisResult:
     ground: ResponseHistory | None = None
     modal: ModalResult | None = None
     sensors: SensorResult | None = None
+    observations: ObservationResult | None = None
     story_stiffness_rows: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -114,6 +257,10 @@ class AnalysisResult:
         object.__setattr__(self, "mass_matrix", mass)
         object.__setattr__(self, "stiffness_matrix", stiffness)
         object.__setattr__(self, "damping_matrix", damping)
+        if self.observations is None and self.sensors is not None:
+            object.__setattr__(self, "observations", self.sensors)
+        elif self.sensors is None and self.observations is not None:
+            object.__setattr__(self, "sensors", _sensor_result_from_observations(self.observations))
 
     def to_legacy_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -153,9 +300,27 @@ class AnalysisResult:
             _put_optional(data, "sensor_absolute_acceleration", self.sensors.absolute_acceleration)
         else:
             data["sensor_rows"] = []
+        if self.observations is not None:
+            data["observation_rows"] = self.observations.rows
+            data["observation_channels"] = [channel.to_dict() for channel in self.observations.channels]
+            data["physical_observation_rows"] = self.observations.rows_by_kind("physical")
+            data["virtual_observation_rows"] = self.observations.rows_by_kind("virtual")
         return data
 
 
 def _put_optional(data: dict[str, Any], key: str, value: Any | None) -> None:
     if value is not None:
         data[key] = value
+
+
+def _sensor_result_from_observations(observations: ObservationResult) -> SensorResult:
+    return SensorResult(
+        rows=observations.rows,
+        channels=observations.channels,
+        displacement=observations.displacement,
+        velocity=observations.velocity,
+        acceleration=observations.acceleration,
+        absolute_displacement=observations.absolute_displacement,
+        absolute_velocity=observations.absolute_velocity,
+        absolute_acceleration=observations.absolute_acceleration,
+    )

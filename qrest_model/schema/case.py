@@ -17,6 +17,7 @@ EULER_BEAM_2D = "euler_beam_2d"
 RAYLEIGH_BEAM_2D = "rayleigh_beam_2d"
 TIMOSHENKO_BEAM_2D = "timoshenko_beam_2d"
 SHEAR_FLEXURE_BUILDING_2D = "shear_flexure_building_2d"
+_LEGACY_OBSERVATION_WARNINGS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class SensorConfig:
     y: float
     direction: str
     quantity: str = "accel"
+    kind: str = "physical"
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,7 @@ class ShearSensorConfig:
     sensor_id: str
     story: int
     quantity: str = "accel"
+    kind: str = "physical"
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,7 @@ class BeamSensorConfig:
     story: int
     dof: str = "U"
     quantity: str = "accel"
+    kind: str = "physical"
 
 
 @dataclass(frozen=True)
@@ -790,6 +794,14 @@ def _normalize_sensor(
     quantity = str(raw.get("quantity", "accel")).lower()
     if quantity not in {"disp", "displacement", "vel", "velocity", "accel", "acceleration"}:
         raise ValueError(f"Unsupported sensor quantity: {quantity}")
+    kind = _legacy_observation_kind(raw.get("kind"), default="virtual" if direction == "RZ" else "physical")
+    if kind == "physical" and direction == "RZ":
+        raise ValueError("Physical translation sensors cannot use structural Rz; declare it as a virtual probe.")
+    if "kind" not in raw and kind == "virtual":
+        _warn_legacy_observation_once(
+            "rigid_rz",
+            "Legacy RZ sensor is classified as a virtual probe; qREST physical export will ignore it.",
+        )
     return SensorConfig(
         sensor_id=str(raw.get("id", f"sensor_{story.story}")),
         story=story.story,
@@ -797,6 +809,7 @@ def _normalize_sensor(
         y=_to_centroid(raw.get("y", 0.0), story.mass_center[1], coordinate_reference),
         direction=direction,
         quantity=quantity,
+        kind=kind,
     )
 
 
@@ -807,10 +820,12 @@ def _normalize_shear_sensor(raw: dict[str, Any], story_ids: set[int]) -> ShearSe
     quantity = str(raw.get("quantity", "accel")).lower()
     if quantity not in {"disp", "displacement", "vel", "velocity", "accel", "acceleration"}:
         raise ValueError(f"Unsupported sensor quantity: {quantity}")
+    kind = _legacy_observation_kind(raw.get("kind"), default="physical")
     return ShearSensorConfig(
         sensor_id=str(raw.get("id", f"sensor_{story}")),
         story=story,
         quantity=quantity,
+        kind=kind,
     )
 
 
@@ -822,11 +837,20 @@ def _normalize_beam_sensor(raw: dict[str, Any], story_ids: set[int]) -> BeamSens
     quantity = str(raw.get("quantity", "accel")).lower()
     if quantity not in {"disp", "displacement", "vel", "velocity", "accel", "acceleration"}:
         raise ValueError(f"Unsupported sensor quantity: {quantity}")
+    kind = _legacy_observation_kind(raw.get("kind"), default="virtual" if dof == "Theta" else "physical")
+    if kind == "physical" and dof == "Theta":
+        raise ValueError("Physical translation sensors cannot use generalized Theta; declare it as a virtual probe.")
+    if "kind" not in raw and kind == "virtual":
+        _warn_legacy_observation_once(
+            "beam_theta",
+            "Legacy Theta beam sensor is classified as a virtual probe; qREST physical export will ignore it.",
+        )
     return BeamSensorConfig(
         sensor_id=str(raw.get("id", f"sensor_{story}")),
         story=story,
         dof=dof,
         quantity=quantity,
+        kind=kind,
     )
 
 
@@ -906,6 +930,20 @@ def _normalize_beam_sensor_dof(raw: Any) -> str:
     if value == "rz":
         raise ValueError("Beam sensor dof Theta is bending rotation, not rigid-floor Rz.")
     raise ValueError(f"Unsupported beam sensor dof: {raw}")
+
+
+def _legacy_observation_kind(raw: Any, *, default: str) -> str:
+    kind = str(raw if raw is not None else default).lower()
+    if kind not in {"physical", "virtual"}:
+        raise ValueError(f"Unsupported observation kind: {raw}")
+    return kind
+
+
+def _warn_legacy_observation_once(key: str, message: str) -> None:
+    if key in _LEGACY_OBSERVATION_WARNINGS:
+        return
+    _LEGACY_OBSERVATION_WARNINGS.add(key)
+    warnings.warn(message, UserWarning, stacklevel=3)
 
 
 def _validate_unique_sensor_ids(sensor_ids: Any) -> None:

@@ -1,0 +1,60 @@
+{
+  "name": "oma_shear_3story",
+  "data_type": "research",
+  "model_type": "shear_building_1d",
+  "description": "Small deterministic OMA baseline with one-direction translational physical observations.",
+  "research": {
+    "task": "oma",
+    "family": "shear",
+    "sensor_density": "full"
+  },
+  "truth_policy": {
+    "include_full_response": true,
+    "include_modal": true,
+    "include_matrices": true
+  },
+  "observations": {
+    "physical": {
+      "stories": [1, 2, 3],
+      "directions": ["X"],
+      "quantity": "acceleration"
+    }
+  },
+  "model_config": {
+    "schema_version": "2.0",
+    "model": {
+      "type": "shear_building_1d",
+      "num_stories": 3,
+      "dof_per_floor": ["Ux"]
+    },
+    "geometry": {
+      "story_heights": [3.0, 3.0, 3.0]
+    },
+    "floor_defaults": {
+      "mass": 1000000.0
+    },
+    "stories": [
+      {"story": 1, "stiffness": 800000000.0},
+      {"story": 2, "stiffness": 700000000.0},
+      {"story": 3, "stiffness": 600000000.0}
+    ],
+    "sensors": [
+      {"id": "01f_x", "story": 1, "quantity": "accel"},
+      {"id": "02f_x", "story": 2, "quantity": "accel"},
+      {"id": "03f_x", "story": 3, "quantity": "accel"}
+    ],
+    "damping": {
+      "type": "rayleigh",
+      "zeta": 0.02,
+      "modes": [1, 2]
+    },
+    "ground_motion": {
+      "dt": 0.01,
+      "duration": 0.1,
+      "synthetic": {
+        "amplitude_x": 0.1,
+        "frequency_x": 1.0
+      }
+    }
+  }
+}

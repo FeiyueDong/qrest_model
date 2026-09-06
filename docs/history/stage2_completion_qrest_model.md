@@ -27,6 +27,7 @@ Stage 2 已把 `qrest_model` 从刚性楼板和一维剪切模型扩展为多模
 - `qrest_model/backends/`：Direct 与 OpenSees 的模型专用入口。
 - `qrest_model/backends/base.py`：统一后端分发。
 - `qrest_model/exporters/backend_outputs.py`：二维模型 legacy 文件输出。
+- `qrest_model/observations/`：单向剪切和二维 beam 模型独立观测映射，Direct 与 OpenSees 后端共同依赖它而不互相依赖。
 - `qrest_model/cli.py`：统一运行和默认输出路径。
 
 `run_linear_direct()` 仍然是二维模型的 Direct 计算核心；Newmark、Rayleigh damping 和 modal analysis 没有在各模型后端内复制。
@@ -42,7 +43,7 @@ Euler-Bernoulli：
 Rayleigh：
 
 - 刚度与 Euler 相同。
-- 质量为 Euler consistent mass 加节点 `rotational_inertia`。
+- 质量为 Euler consistent mass 加节点/楼层集中 `rotational_inertia`，属于离散 Rayleigh-type beam；不是严格连续分布的 Rayleigh 梁单元实现。
 - OpenSees 对照使用 `elasticBeamColumn -cMass` 加节点转动质量。
 
 Timoshenko：
@@ -69,6 +70,7 @@ Stage 2 开发计划中的验收项当前状态：
 - Physics validation：已完成，覆盖 Rayleigh -> Euler、Timoshenko -> Euler、Shear-Flexure -> Flexure。
 - Integration validation：已完成，新增二维模型均有 Direct 与 OpenSees 对照。
 - Regression：已完成，新增二维模型均有 golden reference。
+- Stage 2 收尾：已补充 backend provenance metadata、schema 分层重导出、单向剪切/二维 beam 观测映射解耦和基础 CI 工作流。
 
 ## 验证记录
 
@@ -81,17 +83,17 @@ Stage 2 开发计划中的验收项当前状态：
 结果：
 
 ```text
-78 passed, 19 skipped
+82 passed, 19 skipped
 ```
 
 ```bash
-PYTHONPATH=.:/home/yue/CodeFiles/qrest_module/py_scripts .venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q -m "not opensees"
 ```
 
 结果：
 
 ```text
-80 passed, 17 skipped
+82 passed, 2 skipped, 17 deselected
 ```
 
 ```bash
@@ -101,7 +103,7 @@ env QREST_RUN_OPENSEES_TESTS=1 PYTHONPATH=.:/home/yue/CodeFiles/qrest_module/py_
 结果：
 
 ```text
-97 passed
+101 passed
 ```
 
 同时完成：

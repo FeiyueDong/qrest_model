@@ -42,6 +42,7 @@ from qrest_model.schema.case import (
     normalize_shear_flexure_config,
     normalize_timoshenko_config,
 )
+from qrest_model.schema.observation import ObservationConfig, PhysicalObservationConfig, VirtualProbeConfig
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -69,6 +70,9 @@ __all__ = [
     "ShearStoryConfig",
     "StoryConfig",
     "TimoshenkoBeamModelConfig",
+    "ObservationConfig",
+    "PhysicalObservationConfig",
+    "VirtualProbeConfig",
     "load_config",
     "load_euler_config",
     "load_rayleigh_config",
